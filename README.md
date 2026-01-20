@@ -79,7 +79,7 @@ The waveform above demonstrates:
 1. Ensure `iverilog` and `gtkwave` are installed.
 2. Compile the design:
    ```bash
-   iverilog -o riscv_sim src/*.v test/riscv_top_tb.v
+   iverilog -o riscv_sim src/*.v test/top_tb.v
    vvp riscv_sim
    gtkwave riscv_processor.vcd
    ```
