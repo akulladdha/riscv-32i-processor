@@ -1,0 +1,84 @@
+$date
+	Fri Jan 16 14:40:53 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module fetch_stage_tb $end
+$var wire 32 ! current_pc [31:0] $end
+$var wire 32 " current_instruction [31:0] $end
+$var reg 1 # clk $end
+$var reg 1 $ rst $end
+$scope module my_imem $end
+$var wire 32 % instruction [31:0] $end
+$var wire 32 & addr [31:0] $end
+$upscope $end
+$scope module my_pc $end
+$var wire 1 # clk $end
+$var wire 1 $ reset $end
+$var reg 32 ' pc_out [31:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+bx '
+bx &
+bx %
+1$
+0#
+bx "
+bx !
+$end
+#5000
+b10011 "
+b10011 %
+b0 !
+b0 &
+b0 '
+1#
+#10000
+0#
+0$
+#15000
+b10100000000000100010011 "
+b10100000000000100010011 %
+b100 !
+b100 &
+b100 '
+1#
+#20000
+0#
+#25000
+b100010000000110110011 "
+b100010000000110110011 %
+b1000 !
+b1000 &
+b1000 '
+1#
+#30000
+0#
+#35000
+b10110110000000101010100 "
+b10110110000000101010100 %
+b1100 !
+b1100 &
+b1100 '
+1#
+#40000
+0#
+#45000
+bx "
+bx %
+b10000 !
+b10000 &
+b10000 '
+1#
+#50000
+0#

@@ -1,0 +1,80 @@
+$date
+	Wed Jan 14 17:06:38 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module register_file_tb $end
+$var wire 32 ! rg_sr2_data [31:0] $end
+$var wire 32 " rg_sr1_data [31:0] $end
+$var reg 1 # clk $end
+$var reg 5 $ rg_des_addr [4:0] $end
+$var reg 32 % rg_des_data [31:0] $end
+$var reg 5 & rg_sr1_addr [4:0] $end
+$var reg 5 ' rg_sr2_addr [4:0] $end
+$var reg 1 ( rg_write_en $end
+$var reg 1 ) rst $end
+$scope module uut $end
+$var wire 1 # clk $end
+$var wire 5 * rg_des_addr [4:0] $end
+$var wire 32 + rg_des_data [31:0] $end
+$var wire 5 , rg_sr1_addr [4:0] $end
+$var wire 5 - rg_sr2_addr [4:0] $end
+$var wire 1 ( rg_write_en $end
+$var wire 1 ) rst $end
+$var wire 32 . rg_sr2_data [31:0] $end
+$var wire 32 / rg_sr1_data [31:0] $end
+$var integer 32 0 i [31:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+bx 0
+bx /
+bx .
+b11 -
+b10 ,
+b11011110101011011011111011101111 +
+b1 *
+1)
+0(
+b11 '
+b10 &
+b11011110101011011011111011101111 %
+b1 $
+0#
+bx "
+bx !
+$end
+#5000
+b0 !
+b0 .
+b0 "
+b0 /
+b100000 0
+1#
+#10000
+0#
+1(
+0)
+#15000
+1#
+#20000
+b11011110101011011011111011101111 "
+b11011110101011011011111011101111 /
+0#
+b10 '
+b10 -
+b1 &
+b1 ,
+#25000
+1#
+#30000
+0#
