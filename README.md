@@ -13,50 +13,7 @@ This processor executes instructions in a single clock cycle. It includes a comp
 ## 🛠 Architecture
 The design follows the classic Harvard Architecture, separating Instruction and Data memory.
 
-```mermaid
-graph TD
-    %% Define Modules
-    PC[Program Counter]
-    IMEM[Instruction Memory]
-    CU[Control Unit]
-    RegFile[Register File]
-    ALU[Arithmetic Logic Unit]
-    DMEM[Data Memory]
-    ImmGen[Immediate Generator]
-    
-    %% Muxes
-    ALUMux{ALU Src Mux}
-    WBMux{Writeback Mux}
-
-    %% Logic Flow
-    PC -->|addr| IMEM
-    IMEM -->|32-bit instr| CU
-    IMEM -->|bits 31:0| ImmGen
-    IMEM -->|rs1, rs2, rd| RegFile
-
-    CU -->|RegWrite| RegFile
-    CU -->|ALUOp| ALU
-    CU -->|ALUSrc| ALUMux
-    CU -->|MemWrite/Read| DMEM
-    CU -->|MemToReg| WBMux
-
-    RegFile -->|data1| ALU
-    RegFile -->|data2| ALUMux
-    ImmGen -->|sign-extended imm| ALUMux
-
-    ALUMux -->|operand B| ALU
-    ALU -->|alu_result| DMEM
-    ALU -->|alu_result| WBMux
-    DMEM -->|read_data| WBMux
-
-    WBMux -->|write_data| RegFile
-    
-    %% Style
-    style PC fill:#f9f,stroke:#333,stroke-width:2px
-    style CU fill:#fff4dd,stroke:#d4a017,stroke-width:2px
-    style ALU fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    style DMEM fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-```
+![Processor Datapath](docs/riscvdatapath.png)
 
 ### Key Components:
 * **Program Counter (PC):** Manages the execution flow.
