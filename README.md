@@ -69,7 +69,7 @@ graph TD
 The processor was verified using a custom testbench that executes a "Read-After-Write" program suite.
 
 ### Simulation Results
-`![Waveform Results](docs/gtkwave.png)`
+![Waveform Results](docs/gtkwave.png)
 The waveform above demonstrates:
 1. **Instruction Fetch:** Incrementing PC and valid hex instructions.
 2. **ALU Accuracy:** Successful execution of `ADD` and `ADDI` operations.
