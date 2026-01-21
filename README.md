@@ -38,5 +38,5 @@ The waveform above demonstrates:
    ```bash
    iverilog -o riscv_sim src/*.v test/top_tb.v
    vvp riscv_sim
-   gtkwave riscv_processor.vcd
+   gtkwave sim/riscv_processor.vcd
    ```
