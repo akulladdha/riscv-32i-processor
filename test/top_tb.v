@@ -19,9 +19,31 @@ module riscv_top_tb();
         rst = 1;
         #15;
         rst = 0;
-        #1000;
 
-        $display("Simulation finished. Open riscv_processor.vcd in GTKWave.");
+        // Wait long enough for the BEQ test program to execute.
+        #80;
+
+        if (dut.my_regfile.registers[1] !== 32'd5) begin
+            $display("FAIL: x1 expected 5, got %0d", dut.my_regfile.registers[1]);
+            $finish;
+        end
+
+        if (dut.my_regfile.registers[2] !== 32'd5) begin
+            $display("FAIL: x2 expected 5, got %0d", dut.my_regfile.registers[2]);
+            $finish;
+        end
+
+        if (dut.my_regfile.registers[3] !== 32'd0) begin
+            $display("FAIL: x3 expected 0 because BEQ should skip ADDI, got %0d", dut.my_regfile.registers[3]);
+            $finish;
+        end
+
+        if (dut.my_regfile.registers[4] !== 32'd42) begin
+            $display("FAIL: x4 expected 42, got %0d", dut.my_regfile.registers[4]);
+            $finish;
+        end
+
+        $display("PASS: BEQ skipped the ADDI to x3 and executed the ADDI to x4.");
         $finish;
     end
 endmodule

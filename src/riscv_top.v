@@ -2,16 +2,18 @@ module riscv_top(
     input clk,
     input rst
 );
-
+    
     //Internal Wires
     wire [31:0] pc_out, instr;
     wire [31:0] reg_data1, reg_data2, write_data;
     wire [31:0] alu_result, read_data;
     wire [31:0] imm_ext;
     wire [31:0] alu_src2_mux;
+    wire [31:0] pc_plus4, branch_target, pc_next;
+    wire zero;
     
     //Control Signals
-    wire reg_write, alu_src, mem_read, mem_write, mem_to_reg;
+    wire reg_write, alu_src, mem_read, mem_write, mem_to_reg, branch;
     wire [1:0] alu_op;
 
     //Instruction Slicing
@@ -22,15 +24,24 @@ module riscv_top(
     wire [4:0]  sr2      = instr[24:20];
     wire [6:0]  funct7   = instr[31:25];
 
-    //Sign extension for I type
+    wire is_beq = (opcode == 7'b1100011) && (funct3 == 3'b000);
+
+    // Sign extension for I/S/B types
     wire [31:0] i_ext = {{20{instr[31]}}, instr[31:20]};
     wire [31:0] s_ext = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+    wire [31:0] b_ext = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
     assign imm_ext = (opcode == 7'b0000011 || opcode == 7'b0010011) ? i_ext : // LW or ADDI
-                     (opcode == 7'b0100011) ? s_ext : 32'b0; // SW
+                     (opcode == 7'b0100011) ? s_ext : // SW
+                     (opcode == 7'b1100011) ? b_ext : // BEQ
+                     32'b0;
+    assign pc_plus4      = pc_out + 32'd4;
+    assign branch_target = pc_out + imm_ext;
+    assign pc_next       = (branch && is_beq && zero) ? branch_target : pc_plus4;
 
     pc my_pc (
         .clk(clk),
         .reset(rst),
+        .pc_in(pc_next),
         .pc_out(pc_out)
     );
 
@@ -46,7 +57,8 @@ module riscv_top(
         .mem_read(mem_read),
         .mem_write(mem_write),
         .mem_to_reg(mem_to_reg),
-        .alu_op(alu_op)
+        .alu_op(alu_op),
+        .branch(branch)
     );
 
     reg_file my_regfile (
@@ -82,7 +94,8 @@ module riscv_top(
         .opcode(alu_control_signal),
         .a(reg_data1),
         .b(alu_src2_mux),
-        .result(alu_result)
+        .result(alu_result),
+        .zero(zero)
     );
 
     data_mem my_dmem(

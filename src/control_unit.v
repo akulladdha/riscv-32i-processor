@@ -1,5 +1,6 @@
 module control_unit(
     input [6:0] opcode,
+    output reg branch,
     output reg reg_write,
     output reg alu_src,
     output reg mem_read,
@@ -14,6 +15,7 @@ always @(*) begin
     mem_read   = 0;
     mem_write  = 0;
     mem_to_reg = 0;
+    branch=0;
     alu_op     = 2'b00;
     case(opcode)
         7'b0110011: begin //R-type ADD
@@ -43,6 +45,16 @@ always @(*) begin
             alu_src    = 1;
             alu_op     = 2'b00;
         end
+        7'b1100011: begin // BEQ
+            reg_write  = 0;
+            alu_src    = 0;
+            mem_read   = 0;
+            mem_write  = 0;
+            mem_to_reg = 0;
+            branch     = 1;
+            alu_op     = 2'b01; // subtract rs1 - rs2
+        end
+
         
         default: begin
             
