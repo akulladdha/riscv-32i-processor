@@ -9,6 +9,6 @@ module instruction_mem (
         $readmemh("sample_program.hex", memory);
     end
 
-    assign instruction = memory[addr >> 2]; //converts from the address to the word index
+    assign instruction = memory[addr >> 2]; //converts from the address to the word index, 32 bit so each is 4 bytes
 
 endmodule
