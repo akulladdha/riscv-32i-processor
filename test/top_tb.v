@@ -20,8 +20,8 @@ module riscv_top_tb();
         #15;
         rst = 0;
 
-        // Wait long enough for the BEQ test program to execute.
-        #80;
+        // pipeline with flush needs ~15 cycles; 200ns gives safe margin
+        #200;
 
         if (dut.my_regfile.registers[1] !== 32'd5) begin
             $display("FAIL: x1 expected 5, got %0d", dut.my_regfile.registers[1]);

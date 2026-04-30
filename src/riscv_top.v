@@ -33,8 +33,8 @@ module riscv_top(
     reg [31:0] id_ex_reg_data2;
     reg [31:0] id_ex_imm_ext;
     reg [4:0]  id_ex_rd;
-    reg [4:0]  id_ex_rs1; //for forwarding unit
-    reg [4:0]  id_ex_rs2; //for forwarding unit
+    reg [4:0]  id_ex_rs1;
+    reg [4:0]  id_ex_rs2;
     reg [2:0]  id_ex_funct3;
     reg [6:0]  id_ex_funct7;
     reg        id_ex_reg_write;
@@ -47,6 +47,8 @@ module riscv_top(
 
     //EX stage wires
     reg  [3:0]  ex_alu_control;
+    wire [31:0] ex_alu_a;
+    wire [31:0] ex_alu_b_reg;
     wire [31:0] ex_alu_src2;
     wire [31:0] ex_alu_result;
     wire        ex_zero;
@@ -78,16 +80,28 @@ module riscv_top(
     //WB stage wire
     wire [31:0] wb_write_data;
 
-    //branch resolved in EX, result sits in EX/MEM register
-    //flushing of mis-fetched instructions not yet implemented - insert NOPs after branches for now
-    wire branch_taken = ex_mem_branch && ex_mem_zero;
+    //detect branch taken while BEQ is still in EX (early detection)
+    //using ex_mem signals would be 1 cycle too late — the wrong instruction
+    //would already be latched into ID/EX and propagate one more stage
+    wire branch_taken = id_ex_branch && ex_zero;
+    wire flush        = branch_taken;
+
     assign if_pc_plus4 = pc_out + 32'd4;
-    wire [31:0] pc_next = branch_taken ? ex_mem_branch_target : if_pc_plus4;
+    //use ex_branch_target directly — it's valid while BEQ is in EX
+    wire [31:0] pc_next = branch_taken ? ex_branch_target : if_pc_plus4;
+
+    //load-use hazard: stall if LW in EX and dependent instruction in ID
+    wire stall = id_ex_mem_read &&
+                 (id_ex_rd != 5'b0) &&
+                 ((id_ex_rd == id_rs1) || (id_ex_rd == id_rs2));
+
+    //hold PC when stalling
+    wire [31:0] pc_in_mux = stall ? pc_out : pc_next;
 
     pc my_pc (
         .clk(clk),
         .reset(rst),
-        .pc_in(pc_next),
+        .pc_in(pc_in_mux),
         .pc_out(pc_out)
     );
 
@@ -96,13 +110,13 @@ module riscv_top(
         .instruction(if_instr)
     );
 
-    //IF/ID register
+    //IF/ID register: flush on taken branch, hold on stall
     always @(posedge clk) begin
-        if (rst) begin
+        if (rst || flush) begin
             if_id_pc       <= 32'b0;
             if_id_pc_plus4 <= 32'b0;
             if_id_instr    <= 32'b0;
-        end else begin
+        end else if (!stall) begin
             if_id_pc       <= pc_out;
             if_id_pc_plus4 <= if_pc_plus4;
             if_id_instr    <= if_instr;
@@ -143,9 +157,9 @@ module riscv_top(
         .rg_sr2_data(id_reg_data2)
     );
 
-    //ID/EX register
+    //ID/EX register: inject NOP bubble on stall or flush
     always @(posedge clk) begin
-        if (rst) begin
+        if (rst || stall || flush) begin
             id_ex_pc         <= 32'b0;
             id_ex_pc_plus4   <= 32'b0;
             id_ex_reg_data1  <= 32'b0;
@@ -201,12 +215,40 @@ module riscv_top(
         endcase
     end
 
-    assign ex_alu_src2     = id_ex_alu_src ? id_ex_imm_ext : id_ex_reg_data2;
+    //forwarding unit: select correct ALU source to resolve RAW hazards
+    reg [1:0] forward_a, forward_b;
+    always @(*) begin
+        //EX/MEM forwarding (higher priority)
+        if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs1))
+            forward_a = 2'b10;
+        //MEM/WB forwarding
+        else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs1))
+            forward_a = 2'b01;
+        else
+            forward_a = 2'b00;
+
+        if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs2))
+            forward_b = 2'b10;
+        else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs2))
+            forward_b = 2'b01;
+        else
+            forward_b = 2'b00;
+    end
+
+    assign ex_alu_a     = (forward_a == 2'b10) ? ex_mem_alu_result :
+                          (forward_a == 2'b01) ? wb_write_data :
+                          id_ex_reg_data1;
+
+    assign ex_alu_b_reg = (forward_b == 2'b10) ? ex_mem_alu_result :
+                          (forward_b == 2'b01) ? wb_write_data :
+                          id_ex_reg_data2;
+
+    assign ex_alu_src2     = id_ex_alu_src ? id_ex_imm_ext : ex_alu_b_reg;
     assign ex_branch_target = id_ex_pc + id_ex_imm_ext;
 
     alu my_alu (
         .opcode(ex_alu_control),
-        .a(id_ex_reg_data1),
+        .a(ex_alu_a),
         .b(ex_alu_src2),
         .result(ex_alu_result),
         .zero(ex_zero)
@@ -231,7 +273,7 @@ module riscv_top(
             ex_mem_branch_target <= ex_branch_target;
             ex_mem_alu_result    <= ex_alu_result;
             ex_mem_zero          <= ex_zero;
-            ex_mem_reg_data2     <= id_ex_reg_data2;
+            ex_mem_reg_data2     <= ex_alu_b_reg; //forwarded rs2 for SW
             ex_mem_rd            <= id_ex_rd;
             ex_mem_reg_write     <= id_ex_reg_write;
             ex_mem_mem_read      <= id_ex_mem_read;

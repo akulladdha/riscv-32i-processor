@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(iverilog -o riscv_sim src/*.v test/top_tb.v)",
+      "Bash(vvp riscv_sim)"
+    ]
+  }
+}
