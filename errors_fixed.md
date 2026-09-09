@@ -517,3 +517,41 @@ real register specifier and the stall compares `id_ex_rd` against `id_rs1`.
 ```
 passed: 10   failed: 0
 ```
+
+---
+
+## Part C — Directed hazard tests (no RTL change)
+
+Opcode coverage on a pipelined core says little without hazard coverage, so
+these tests target the control logic rather than the ISA. No RTL changed here.
+
+| Test | Scenario |
+|---|---|
+| `fwd` | EX/MEM→EX, MEM/WB→EX, both sources contending, store-data forwarding |
+| `loaduse` | Load-use stall with an ALU consumer, and with a **branch** consumer |
+| `flush` | Flush depth on a taken branch, and two redirects back to back |
+| `x0` | Writes to `x0` discarded, including via `LUI` and a real `ADD` result |
+| `fence` | `FENCE` retires as an architectural NOP without disturbing the pipeline |
+
+### These tests were mutation-checked
+
+A hazard test that passes on first run may be exercising nothing. Each was
+validated by deliberately breaking the RTL and confirming the right assertion —
+and only that assertion — failed:
+
+| Mutation | Result |
+|---|---|
+| Reverse forwarding priority (MEM/WB before EX/MEM) | `fwd` contention fails: `x7` = 5, not 9 |
+| Force `stall = 0` | `loaduse` fails both: `x4` = 65, branch consumer mispredicts |
+| Flush ID/EX only, leave IF/ID alive (depth 1) | `flush` fails `x3` and `x14` — the second victim survives |
+| Allow writes to `x0` | `x0` fails `registers[0]` = 14 |
+
+All four reverted cleanly; the suite returns to 15/15.
+
+### One thing the mutation testing exposed
+
+Under mutation 4, the checks reading `x0` into another register (`x1`, `x2`,
+`x4`) **still passed**. The register file hardwires `x0` on the *read* port
+independently of the write path, so a broken write-discard is invisible through
+reads. Only inspecting `registers[0]` directly catches it. A test suite that
+checked `x0` only by reading it would have scored a pass on broken hardware.
