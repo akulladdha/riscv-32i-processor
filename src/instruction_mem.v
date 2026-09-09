@@ -1,4 +1,6 @@
-module instruction_mem (
+module instruction_mem #(
+    parameter PROGRAM = "sample_program.hex"
+) (
     input  [31:0] addr, //From PC
     output [31:0] instruction //To Control/Reg
 );
@@ -6,7 +8,7 @@ module instruction_mem (
     reg [31:0] memory [0:1023];
     
     initial begin
-        $readmemh("sample_program.hex", memory);
+        $readmemh(PROGRAM, memory);
     end
 
     assign instruction = memory[addr >> 2]; //converts from the address to the word index, 32 bit so each is 4 bytes

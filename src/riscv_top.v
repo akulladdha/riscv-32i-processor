@@ -1,4 +1,6 @@
-module riscv_top(
+module riscv_top #(
+    parameter PROGRAM = "sample_program.hex"
+)(
     input clk,
     input rst
 );
@@ -105,7 +107,7 @@ module riscv_top(
         .pc_out(pc_out)
     );
 
-    instruction_mem my_imem (
+    instruction_mem #(.PROGRAM(PROGRAM)) my_imem (
         .addr(pc_out),
         .instruction(if_instr)
     );

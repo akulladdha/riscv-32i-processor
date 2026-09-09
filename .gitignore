@@ -27,3 +27,7 @@ a.out
 *.str
 
 # Keep: *.xpr, *.xdc, and all TCL are deliberately NOT ignored.
+
+# ---- test harness generated output ----
+tests/build/
+tests/progs/*.hex
