@@ -332,12 +332,35 @@ module riscv_top #(
         end
     end
 
+    //store lane select. The data is replicated across all four lanes so the
+    //byte enable alone decides which part of the word is written, which keeps
+    //the memory free of any shift logic.
+    reg [3:0]  mem_byte_en;
+    reg [31:0] mem_store_data;
+    always @(*) begin
+        case (ex_mem_funct3)
+            3'b000: begin //SB
+                mem_byte_en    = 4'b0001 << ex_mem_alu_result[1:0];
+                mem_store_data = {4{ex_mem_reg_data2[7:0]}};
+            end
+            3'b001: begin //SH
+                mem_byte_en    = ex_mem_alu_result[1] ? 4'b1100 : 4'b0011;
+                mem_store_data = {2{ex_mem_reg_data2[15:0]}};
+            end
+            default: begin //SW
+                mem_byte_en    = 4'b1111;
+                mem_store_data = ex_mem_reg_data2;
+            end
+        endcase
+    end
+
     data_mem my_dmem (
         .clk(clk),
         .mem_read(ex_mem_mem_read),
         .mem_write(ex_mem_mem_write),
+        .byte_en(mem_byte_en),
         .addr(ex_mem_alu_result),
-        .write_data(ex_mem_reg_data2),
+        .write_data(mem_store_data),
         .read_data(mem_read_data)
     );
 

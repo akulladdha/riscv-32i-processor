@@ -25,6 +25,7 @@ module logic_test_tb();
         .clk(clk),
         .mem_read(mem_read),
         .mem_write(mem_write), 
+        .byte_en(4'b1111), //all lanes: this bench only exercises word stores
         .addr(addr),
         .write_data(write_data),
         .read_data(read_data)

@@ -346,3 +346,68 @@ TEST bcond: PASS  TEST itype: PASS  TEST loads: PASS  TEST raw3: PASS
 TEST rtype: PASS  TEST utype: PASS  TEST top_tb (original): PASS
 passed: 7   failed: 0
 ```
+
+---
+
+## Fix 6 — SB and SH clobbered the whole word
+
+**Known Issue #4 (store half) · correctness bug · `src/data_mem.v`, `src/riscv_top.v`**
+
+### What was wrong
+
+`data_mem` had no byte enables — `memory[addr[11:2]] <= write_data` wrote all
+32 bits unconditionally — and the decoder ignored `funct3`. `SB` and `SH`
+therefore behaved as `SW`, destroying the three or two bytes they should have
+left alone.
+
+### Failing evidence
+
+Two sub-word stores into one word; the second wiped the first:
+
+```
+FAIL SB  merged x6:  expected 0x00550077, got 0x00000055
+FAIL SH  merged x12: expected 0x04560123, got 0x00000456
+```
+
+### Why this fix is ~24 lines
+
+Byte-granular writes need two things that cannot be separated: a per-lane write
+enable on the memory, and logic to place the data in the right lane. `SB` and
+`SH` share every line of both — implementing one would build the entire
+mechanism, and the other would then be two case arms.
+
+### The change
+
+`data_mem` gains a 4-bit `byte_en` and writes each lane under its own enable.
+`riscv_top` computes the enable and replicates the store data across all four
+lanes:
+
+```verilog
+3'b000: begin //SB
+    mem_byte_en    = 4'b0001 << ex_mem_alu_result[1:0];
+    mem_store_data = {4{ex_mem_reg_data2[7:0]}};
+end
+```
+
+Replicating the data means the byte enable alone decides what lands, so the
+memory needs no shifter. `SW` takes the `default` with `byte_en = 4'b1111`,
+identical to the old behaviour.
+
+### Collateral caught
+
+`test/logic_test_tb.v` instantiates `data_mem` directly by name, so the new
+port was left **floating** there — its store test silently wrote nothing.
+Because that bench only `$display`s and never asserts, it still printed
+"Test Complete" and would have hidden the breakage indefinitely. Repaired with
+`.byte_en(4'b1111)`, preserving its original word-store behaviour exactly.
+
+This is a second illustration of Known Issue #13: a non-asserting test cannot
+tell you it broke.
+
+### Passing evidence
+
+```
+TEST bcond: PASS  TEST itype: PASS  TEST loads: PASS   TEST raw3: PASS
+TEST rtype: PASS  TEST stores: PASS TEST utype: PASS   TEST top_tb: PASS
+passed: 8   failed: 0
+```
