@@ -271,14 +271,41 @@ installed. **The simulation could not be run.**
 
 Recommended, in order of least friction:
 
-1. **WSL2** — `sudo apt update && sudo apt install iverilog gtkwave`. Closest
-   match to the original macOS environment: same POSIX shell, same `src/*.v`
-   globbing, LF line endings, no shebang or path-translation issues. Reach the
-   repo at `/mnt/c/Users/akull/OneDrive/Desktop/riscv_processor`, or clone into
-   the WSL filesystem for better I/O.
-2. **Native Windows** — install Icarus Verilog for Windows (bundles GTKWave).
-   Works, but `src/*.v` needs a shell that expands globs; `cmd.exe` will not.
-   Use Git Bash or PowerShell.
+1. **Native Windows — the right default for this repo.** Install Icarus Verilog
+   for Windows; it bundles GTKWave. There is no reason to reach for a Unix
+   environment here: this project has no Makefile, no shell script, and no TCL
+   (Known Issues #15). The whole build is three `iverilog`/`vvp` invocations, and
+   nothing in it is POSIX-specific. Native also keeps the repo on its own
+   filesystem and gives you a native GTKWave with no display bridge.
+
+   One wrinkle: **PowerShell does not expand wildcards for native executables.**
+   It hands `src\*.v` to the process literally (verified on this machine). Two
+   ways around it:
+
+   ```powershell
+   # PowerShell — expand the glob yourself
+   iverilog -o riscv_sim (Get-ChildItem src\*.v).FullName test\top_tb.v
+   vvp riscv_sim
+   ```
+
+   ```bash
+   # Git Bash (already installed here) — the README command works verbatim
+   iverilog -o riscv_sim src/*.v test/top_tb.v
+   vvp riscv_sim
+   ```
+
+   `cmd.exe` expands nothing either; don't use it. Either way, run from the repo
+   root — see the `$readmemh` note in Build & Simulation Flow.
+
+2. **WSL2** — `sudo apt update && sudo apt install iverilog gtkwave`. A
+   reasonable choice if you already live in WSL, but it is *not* the lower-friction
+   option for this repo, and the "closer to the original macOS setup" argument
+   does not survive contact with the facts: there is no POSIX build tooling here
+   to be compatible with. Real costs: the repo sits on `C:\` under OneDrive, so
+   reaching it at `/mnt/c/Users/akull/OneDrive/Desktop/riscv_processor` crosses
+   the 9p filesystem bridge and is slow; cloning into the WSL filesystem fixes
+   the speed but leaves you maintaining two copies; and GTKWave needs WSLg.
+
 3. **Vivado** — required only if the FPGA target is pursued. Read Known Issues
    #6, #7, #8 first; the design will not usefully synthesize as written.
 
