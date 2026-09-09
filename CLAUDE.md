@@ -468,14 +468,22 @@ Ordered by severity. Tags: **[correctness bug]**, **[FPGA synthesis risk]**,
     performance wart rather than a live bug, but the condition is stated
     incorrectly and should be qualified by the ID instruction's format.
 
-12. **[repo hygiene] Dead pipeline registers left over from a
-    later-branch-resolution design.** `ex_mem_branch_target` (`riscv_top.v:261`),
-    `ex_mem_zero` (`:263`), `ex_mem_branch` (`:270`), `ex_mem_pc_plus4` (`:260`)
-    and `id_ex_pc_plus4` (`:182`) are all latched and **never read**. Branch
-    resolution moved to EX (`riscv_top.v:86`) and these were not removed.
-    `id_ex_funct7` is read only for bit 5 (`riscv_top.v:208`). Synthesis trims
-    them; a human reading the file is misled into thinking there is a MEM-stage
-    branch path.
+12. **[repo hygiene] ~~Dead pipeline registers left over from a
+    later-branch-resolution design.~~ RESOLVED on branch `fix-and-cover`.**
+    `ex_mem_branch_target`, `ex_mem_zero`, `ex_mem_branch`, `ex_mem_pc_plus4`,
+    `id_ex_pc_plus4`, `if_id_pc_plus4` and the `ex_zero` wire were all latched
+    or driven and **never read** — roughly 130 flops. Two separate causes: a
+    three-stage-long `pc_plus4` chain that never gained a consumer, and the
+    leftovers of a design that resolved branches in MEM before resolution moved
+    to EX. Deleted; the 15-test suite passes unchanged.
+
+    Still standing: `id_ex_funct7` (7 bits) is piped to EX and read only for
+    bit 5, because ALU decode happens in two places — `control_unit` emits
+    `alu_op` in ID and the final `alu_control` is derived again in EX. Folding
+    that into `control_unit` would remove the field entirely. Also
+    unaddressed: MEM/WB carries `mem_wb_alu_result`, `mem_wb_read_data` **and**
+    `mem_wb_mem_to_reg`, where resolving the writeback mux one stage earlier
+    would pipe a single 32-bit result instead of 65 bits.
 
 13. **[repo hygiene] The one integration test passes, and that is misleading.**
     `test/top_tb.v` runs green (`PASS`, exit 0) on Icarus Verilog 12.0. It is the

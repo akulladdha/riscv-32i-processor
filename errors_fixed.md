@@ -584,3 +584,60 @@ deliberately out of scope.
 unmodified.
 
 Full detail in `COVERAGE.md`.
+
+---
+
+## Cleanup — deleted ~130 dead pipeline flops
+
+**Known Issue #12 · repo hygiene · `src/riscv_top.v`**
+
+### What was wrong
+
+Seven signals were written every cycle and read by nothing. Found by
+reference-counting every declaration in the module, not by eye.
+
+| Signal | Bits | Why it was dead |
+|---|---|---|
+| `if_id_pc_plus4` | 32 | Fed only `id_ex_pc_plus4` |
+| `id_ex_pc_plus4` | 32 | Fed only `ex_mem_pc_plus4` |
+| `ex_mem_pc_plus4` | 32 | Read by nothing |
+| `ex_mem_branch_target` | 32 | Read by nothing |
+| `ex_mem_zero` | 1 | Read by nothing |
+| `ex_mem_branch` | 1 | Read by nothing |
+| `ex_zero` | wire | Fed only `ex_mem_zero` |
+
+Two independent causes:
+
+1. **A `pc_plus4` chain three stages long that never gained a consumer.** It
+   looks like it was intended to carry a jump's link value, but `JAL` (Fix 7)
+   routes the link through the ALU instead, so nothing ever read the end of it.
+2. **Leftovers from resolving branches in MEM.** Resolution moved to EX and
+   these were never removed.
+
+`ex_zero` is worth calling out: it is the ALU's `zero` output. Before Fix 4 it
+drove `branch_taken`; the `funct3` comparator replaced it, leaving the ALU's
+32-bit zero-comparator driving a dead register.
+
+### The change
+
+19 lines, all deletions, no logic touched. `alu.v` keeps its `zero` port — the
+port is simply left unconnected in `riscv_top`, because `test/alu_tb.v`
+instantiates the ALU with that connection and removing the port would break an
+existing testbench for no gain. Synthesis trims an unused output either way.
+
+### Evidence it changed nothing
+
+- All 15 tests pass, unchanged.
+- `iverilog -Wall` clean (no new warnings; no latch or width messages).
+- All five legacy unit testbenches still build: `alu_tb`, `pc_tb`,
+  `register_file_tb`, `fetch_stage_tb`, `logic_test_tb`.
+- `if_pc_plus4` verified still live — it drives `pc_next`, and only the
+  *pipelined copies* of it were dead.
+
+### Not done
+
+Two structural redundancies remain, both noted in `COVERAGE.md`: ALU decode
+happens in two places (so `id_ex_funct7` is piped 7 bits wide to be read for
+one bit), and MEM/WB carries both candidate results plus a selector where one
+resolved result would do. Both are restructurings rather than dead-code
+removal, so they were left alone.

@@ -151,7 +151,10 @@ block this work, but they are not resolved either.
 | `riscv_top` has no output ports, no `.xdc` (`CLAUDE.md` #8) | Unfixed. The design still cannot go on a board — synthesis would optimise it all away. |
 | Instruction fetch has no bounds check (`CLAUDE.md` #10) | Unfixed. Past the program end the core fetches X forever; harmless only by luck. |
 | Load-use stall ignores whether the ID instruction reads `rs2` (`CLAUDE.md` #11) | Unfixed. Causes spurious one-cycle stalls, never a wrong answer. |
-| Dead EX/MEM branch registers (`CLAUDE.md` #12) | Unfixed, and now slightly worse: `alu_op = 2'b01` still drives a subtract for branches whose result the new comparator no longer uses. Removing it is a refactor, not a fix. |
+| Dead EX/MEM branch registers (`CLAUDE.md` #12) | **Fixed.** ~130 dead flops deleted: the `pc_plus4` chain across three stages, `ex_mem_branch`/`_branch_target`/`_zero`, and the `ex_zero` wire. Suite unchanged at 15/15. |
+| Double ALU decode — `id_ex_funct7` piped to EX for one bit (`CLAUDE.md` #12) | Unfixed. `control_unit` emits `alu_op` in ID, then `alu_control` is derived again in EX from `funct3`/`funct7`. Folding it into `control_unit` removes the 7-bit field. |
+| MEM/WB carries both results plus a selector (`CLAUDE.md` #12) | Unfixed. Resolving the writeback mux in MEM would pipe one 32-bit result instead of 65 bits. |
+| `alu_op = 2'b01` still drives a subtract for branches | Unfixed. The `funct3` comparator no longer uses that result. Harmless; removing it is a refactor, not a fix. |
 | Stall outranks branch redirect in the PC mux (`CLAUDE.md` #17) | Unfixed and **still latent** — `stall` requires `id_ex_mem_read`, `redirect` requires `id_ex_branch` or `id_ex_jump`, and no instruction sets both. Adding a load-and-branch instruction would make it live. |
 
 ---

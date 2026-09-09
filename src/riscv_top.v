@@ -12,7 +12,6 @@ module riscv_top #(
 
     //IF/ID pipeline register
     reg [31:0] if_id_pc;
-    reg [31:0] if_id_pc_plus4;
     reg [31:0] if_id_instr;
 
     //ID stage wires decoded from if_id_instr
@@ -33,7 +32,6 @@ module riscv_top #(
 
     //ID/EX pipeline register
     reg [31:0] id_ex_pc;
-    reg [31:0] id_ex_pc_plus4;
     reg [31:0] id_ex_reg_data1;
     reg [31:0] id_ex_reg_data2;
     reg [31:0] id_ex_imm_ext;
@@ -59,22 +57,17 @@ module riscv_top #(
     wire [31:0] ex_alu_b_reg;
     wire [31:0] ex_alu_src2;
     wire [31:0] ex_alu_result;
-    wire        ex_zero;
     wire [31:0] ex_branch_target;
     wire [31:0] ex_jump_target;
 
     //EX/MEM pipeline register
-    reg [31:0] ex_mem_pc_plus4;
-    reg [31:0] ex_mem_branch_target;
     reg [31:0] ex_mem_alu_result;
-    reg        ex_mem_zero;
     reg [31:0] ex_mem_reg_data2;
     reg [4:0]  ex_mem_rd;
     reg        ex_mem_reg_write;
     reg        ex_mem_mem_read;
     reg        ex_mem_mem_write;
     reg        ex_mem_mem_to_reg;
-    reg        ex_mem_branch;
     reg [2:0]  ex_mem_funct3;
 
     //MEM stage wires
@@ -141,11 +134,9 @@ module riscv_top #(
     always @(posedge clk) begin
         if (rst || flush) begin
             if_id_pc       <= 32'b0;
-            if_id_pc_plus4 <= 32'b0;
             if_id_instr    <= 32'b0;
         end else if (!stall) begin
             if_id_pc       <= pc_out;
-            if_id_pc_plus4 <= if_pc_plus4;
             if_id_instr    <= if_instr;
         end
     end
@@ -197,7 +188,6 @@ module riscv_top #(
     always @(posedge clk) begin
         if (rst || stall || flush) begin
             id_ex_pc         <= 32'b0;
-            id_ex_pc_plus4   <= 32'b0;
             id_ex_reg_data1  <= 32'b0;
             id_ex_reg_data2  <= 32'b0;
             id_ex_imm_ext    <= 32'b0;
@@ -218,7 +208,6 @@ module riscv_top #(
             id_ex_jalr       <= 1'b0;
         end else begin
             id_ex_pc         <= if_id_pc;
-            id_ex_pc_plus4   <= if_id_pc_plus4;
             id_ex_reg_data1  <= id_reg_data1;
             id_ex_reg_data2  <= id_reg_data2;
             id_ex_imm_ext    <= id_imm_ext;
@@ -325,37 +314,29 @@ module riscv_top #(
         .opcode(ex_alu_control),
         .a(ex_alu_a),
         .b(ex_alu_src2),
-        .result(ex_alu_result),
-        .zero(ex_zero)
+        .result(ex_alu_result)
+        //.zero() left unconnected: the funct3 branch comparator replaced it
     );
 
     //EX/MEM register
     always @(posedge clk) begin
         if (rst) begin
-            ex_mem_pc_plus4      <= 32'b0;
-            ex_mem_branch_target <= 32'b0;
             ex_mem_alu_result    <= 32'b0;
-            ex_mem_zero          <= 1'b0;
             ex_mem_reg_data2     <= 32'b0;
             ex_mem_rd            <= 5'b0;
             ex_mem_reg_write     <= 1'b0;
             ex_mem_mem_read      <= 1'b0;
             ex_mem_mem_write     <= 1'b0;
             ex_mem_mem_to_reg    <= 1'b0;
-            ex_mem_branch        <= 1'b0;
             ex_mem_funct3        <= 3'b0;
         end else begin
-            ex_mem_pc_plus4      <= id_ex_pc_plus4;
-            ex_mem_branch_target <= ex_branch_target;
             ex_mem_alu_result    <= ex_alu_result;
-            ex_mem_zero          <= ex_zero;
             ex_mem_reg_data2     <= ex_alu_b_reg; //forwarded rs2 for SW
             ex_mem_rd            <= id_ex_rd;
             ex_mem_reg_write     <= id_ex_reg_write;
             ex_mem_mem_read      <= id_ex_mem_read;
             ex_mem_mem_write     <= id_ex_mem_write;
             ex_mem_mem_to_reg    <= id_ex_mem_to_reg;
-            ex_mem_branch        <= id_ex_branch;
             ex_mem_funct3        <= id_ex_funct3;
         end
     end
