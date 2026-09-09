@@ -8,6 +8,7 @@ module control_unit(
     output reg mem_to_reg,
     output reg [1:0] alu_op,
     output reg jump,
+    output reg jalr, //target is rs1 + imm rather than pc + imm
     output reg [1:0] alu_a_src //00=register, 01=PC (AUIPC), 10=zero (LUI)
 
 );
@@ -21,6 +22,7 @@ always @(*) begin
     alu_op     = 2'b00;
     alu_a_src  = 2'b00;
     jump       = 0;
+    jalr       = 0;
     case(opcode)
         7'b0110011: begin //R-type ADD
             reg_write  = 1;
@@ -75,6 +77,12 @@ always @(*) begin
         7'b1101111: begin // JAL: rd = pc+4, PC = pc + j_imm
             reg_write  = 1;
             jump       = 1;
+            alu_a_src  = 2'b01; //link value is PC + 4
+        end
+        7'b1100111: begin // JALR: rd = pc+4, PC = (rs1 + imm) with LSB cleared
+            reg_write  = 1;
+            jump       = 1;
+            jalr       = 1;
             alu_a_src  = 2'b01; //link value is PC + 4
         end
         default: begin

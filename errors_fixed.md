@@ -460,3 +460,60 @@ the flush depth of 2 is already correct for a redirect resolved in EX.
 ```
 passed: 9   failed: 0
 ```
+
+---
+
+## Fix 8 — JALR executed as a silent NOP; no LSB clear existed
+
+**Known Issue #5 (JALR) · correctness bug · `src/control_unit.v`, `src/riscv_top.v`**
+
+### What was wrong
+
+Opcode `1100111` was not decoded. There was also no `& ~1` anywhere in the
+source — the LSB clear the spec requires for `JALR` had nothing to clear
+because the instruction did not exist.
+
+### Failing evidence
+
+```
+FAIL JALR link x5=12: expected 12, got 0
+FAIL JALR link x8=28: expected 28, got 0
+FAIL flushed x2=0:    expected 0,  got 99
+FAIL flushed x3=0:    expected 0,  got 99
+FAIL skipped x6=0:    expected 0,  got 55
+```
+
+### Testing the LSB clear is not obvious
+
+`instruction_mem` indexes `memory[addr >> 2]`, discarding `addr[1:0]`
+entirely — so a `JALR` to an odd address still *fetches* the right word, and a
+naive test cannot see the bug. The clear is observable only through the PC
+value itself.
+
+The test therefore jumps to an odd address (29) and puts a `JAL` at the landing
+site. That `JAL`'s link is `pc + 4`: **32** if the LSB was cleared to 28, **33**
+if it was not. `x10 == 32` is the assertion that actually proves the clear.
+
+### The change
+
+20 lines. `JALR` decodes with `jump = 1` (reusing the whole `JAL` link and
+flush path from Fix 7) plus a new `jalr` bit selecting the target:
+
+```verilog
+assign ex_jump_target = id_ex_jalr ? ((ex_fwd_rs1 + id_ex_imm_ext) & ~32'd1)
+                                   : ex_branch_target;
+```
+
+The forwarded `rs1` had to be split into its own wire `ex_fwd_rs1`. It was
+previously folded into `ex_alu_a`, but for a jump `ex_alu_a` carries the PC for
+the link value, so the target computation needs the register separately. That
+split is required by the fix, not a tidy-up.
+
+The existing load-use stall already covers `JALR`, since its `rs1` field is a
+real register specifier and the stall compares `id_ex_rd` against `id_rs1`.
+
+### Passing evidence
+
+```
+passed: 10   failed: 0
+```
