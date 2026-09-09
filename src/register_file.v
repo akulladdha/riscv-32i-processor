@@ -12,8 +12,17 @@ module reg_file (
 reg [31:0] registers [31:0];
 integer i;
 
-assign rg_sr1_data = (rg_sr1_addr == 5'b0) ? 32'b0 : registers[rg_sr1_addr];
-assign rg_sr2_data = (rg_sr2_addr == 5'b0) ? 32'b0 : registers[rg_sr2_addr];
+// Write-first: a read in the same cycle as a write to the same register must
+// return the new data. Without this, a RAW dependency at distance 3 - past the
+// reach of EX/MEM and MEM/WB forwarding - reads a stale value.
+wire wr_active = rg_write_en && (rg_des_addr != 5'b0);
+
+assign rg_sr1_data = (rg_sr1_addr == 5'b0) ? 32'b0 :
+                     (wr_active && (rg_des_addr == rg_sr1_addr)) ? rg_des_data :
+                     registers[rg_sr1_addr];
+assign rg_sr2_data = (rg_sr2_addr == 5'b0) ? 32'b0 :
+                     (wr_active && (rg_des_addr == rg_sr2_addr)) ? rg_des_data :
+                     registers[rg_sr2_addr];
 
 always @(posedge clk) begin
     if(rst) begin
