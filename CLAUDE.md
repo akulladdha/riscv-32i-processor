@@ -4,6 +4,10 @@ Working notes for a 5-stage pipelined RV32I-subset processor. Written from a
 full read of the RTL on 2026-09-09. Findings cite file and line. Where the
 README and the RTL disagree, the RTL wins and the disagreement is recorded.
 
+Icarus Verilog 12.0 was installed during the audit, so the integration test and
+the headline bugs below are **verified by execution**, not inferred. Findings
+carrying a "Reproduced" note were run on this machine.
+
 ---
 
 ## Project Overview
@@ -231,14 +235,21 @@ Two unstated preconditions:
 Unit testbenches follow the same pattern, e.g.
 `iverilog -o alu_sim src/alu.v test/alu_tb.v && vvp alu_sim`.
 
-**Expected output of the integration test:**
+**Actual output of the integration test** (run on this machine, Icarus Verilog
+12.0, exit 0):
 
 ```
+WARNING: src/instruction_mem.v:9: $readmemh(sample_program.hex): Not enough
+         words in the file for the requested range [0:1023].
+VCD info: dumpfile riscv_processor.vcd opened for output.
 PASS: BEQ skipped the ADDI to x3 and executed the ADDI to x4.
+test/top_tb.v:47: $finish called at 215000 (1ps)
 ```
 
-That expectation is derived from a hand-trace of the RTL, **not** from an
-execution — see Known Issues #13. The trace: at cycle 5 the BEQ is in EX with
+**The test passes.** The `$readmemh` warning is expected and benign — the
+program is 5 words and the array is 1024 deep (Known Issues #10).
+
+The mechanism, confirmed against the waveform: at cycle 5 the BEQ is in EX with
 `x1` forwarded from MEM/WB (`forward_a = 2'b01`) and `x2` from EX/MEM
 (`forward_b = 2'b10`); the ALU computes `5 - 5 = 0`; `ex_zero` asserts; flush
 zeroes IF/ID and ID/EX, killing the `ADDI x3` in ID and the `ADDI x4` in IF; the
@@ -253,21 +264,32 @@ exactly why Known Issues #1 has survived undetected.
 
 ## Toolchain Notes (WSL2 vs Windows)
 
-State of this machine as of the audit:
+State of this machine after the audit:
 
 | Tool | Windows | WSL2 (Ubuntu) |
 |---|---|---|
-| `iverilog` | absent | absent |
-| `vvp` | absent | absent |
-| `gtkwave` | absent | absent |
+| `iverilog` | **12.0, installed** — `C:\iverilog\bin\iverilog.exe` | absent |
+| `vvp` | **12.0, installed** — `C:\iverilog\bin\vvp.exe` | absent |
+| `gtkwave` | **installed** — `C:\iverilog\gtkwave\bin\gtkwave.exe` | absent |
 | `make` | absent | not checked |
 | Vivado | absent | absent |
 
-WSL2 with an Ubuntu distro is installed and running. `sudo` there requires an
-interactive password, so `apt install iverilog` could not be completed
-unattended. `winget` exists on the Windows side but blocks on an interactive
-`msstore` source agreement. No user-scope package manager (scoop, choco) is
-installed. **The simulation could not be run.**
+Installed during the audit with:
+
+```powershell
+winget install --id Icarus.Verilog --source winget `
+  --accept-source-agreements --accept-package-agreements --silent
+```
+
+That pulls `iverilog-v12-20220611-x64_setup.exe` from bleyer.org, which bundles
+GTKWave. **The silent install does not touch PATH** — `C:\iverilog\bin` and
+`C:\iverilog\gtkwave\bin` were appended to the *user* PATH manually (no admin
+required). A new shell is needed to pick that up.
+
+Note for reproducing the earlier state: `winget` without
+`--accept-source-agreements` blocks on an interactive `msstore` prompt, and
+WSL2's `sudo` needs an interactive password — which is why neither worked
+unattended before you asked.
 
 Recommended, in order of least friction:
 
@@ -345,11 +367,27 @@ Ordered by severity. Tags: **[correctness bug]**, **[FPGA synthesis risk]**,
    bypass mux in `reg_file` when
    `rg_write_en && rg_des_addr == rg_srN_addr && rg_des_addr != 0`.
 
+   **Reproduced on this machine.** Program: `ADDI x1,x0,5` / `NOP` / `NOP` /
+   `ADD x5,x1,x0` (distance 3) / `ADD x6,x1,x0` (distance 4, control). Result:
+
+   ```
+   x1 = 5   producer wrote correctly
+   x5 = 0   <-- distance-3 consumer read a STALE x1
+   x6 = 5   distance-4 consumer read the correct value
+   ```
+
+   Wrong answer, no warning, no X. Note the repo's own `test/top_tb.v` cannot
+   catch this: it only ever builds distance-1 and distance-2 dependencies.
+
 2. **[correctness bug] Every I-type ALU instruction executes as `ADDI`.**
    `control_unit.v:26–30` matches opcode `0010011` and hardcodes
    `alu_op = 2'b00` ("force add"), never inspecting `funct3`. `ANDI`, `ORI`,
    `XORI`, `SLTI`, `SLTIU`, `SLLI`, `SRLI`, `SRAI` therefore all perform an
    addition. No error, no trap — wrong results, silently.
+
+   **Reproduced on this machine.** With `x1 = 5`, the instruction
+   `ANDI x7, x1, 3` (`0x0030F393`) yielded `x7 = 8`. Correct `ANDI` is
+   `5 & 3 = 1`; `8` is `5 + 3`, i.e. an `ADDI`.
 
 3. **[correctness bug] Every conditional branch executes as `BEQ`.**
    `control_unit.v:48–56` keys on opcode `1100011` alone and always sets
@@ -358,6 +396,11 @@ Ordered by severity. Tags: **[correctness bug]**, **[FPGA synthesis risk]**,
    **inverted** — it branches exactly when it must not. `BLT`, `BGE`, `BLTU`,
    `BGEU` are equally wrong, and the ALU has no comparison operation to build
    them from anyway.
+
+   **Reproduced on this machine.** Program: `ADDI x1,x0,5` / `ADDI x2,x0,7` /
+   `BNE x1,x2,+8` (`0x00209463`) / `ADDI x3,x0,99` / `ADDI x4,x0,42`. Since
+   `5 != 7` the branch must be taken and `x3` must stay 0. Result: **`x3 = 99`** —
+   the branch was not taken. `BNE` behaves as `BEQ`, confirming the inversion.
 
 4. **[correctness bug] All load and store widths execute as word.**
    `control_unit.v:31–47` ignores `funct3` for both opcodes, and `data_mem` is
@@ -434,14 +477,18 @@ Ordered by severity. Tags: **[correctness bug]**, **[FPGA synthesis risk]**,
     them; a human reading the file is misled into thinking there is a MEM-stage
     branch path.
 
-13. **[repo hygiene] The simulation could not be run — no toolchain on this
-    machine.** `iverilog`, `vvp`, and `gtkwave` are absent from both Windows and
-    WSL2; Vivado is absent. WSL `sudo` needs an interactive password and `winget`
-    blocks on an interactive source agreement, so neither could be installed
-    unattended. **Part A of this audit is unverified by execution.** Everything
-    above is static analysis of the RTL. The design *should* pass
-    `test/top_tb.v` by hand-trace, but that is a prediction, not a result.
-    Install per the Toolchain Notes and run it.
+13. **[repo hygiene] The one integration test passes, and that is misleading.**
+    `test/top_tb.v` runs green (`PASS`, exit 0) on Icarus Verilog 12.0. It is the
+    *only* self-checking test in the repo, it asserts on four registers, and it
+    exercises exactly one code path: a taken `BEQ` with distance-1 and distance-2
+    forwarding. It cannot fail on Known Issues #1, #2, #3, #4, or #5 — all of
+    which are live, silent, wrong-answer bugs, and three of which were reproduced
+    on this machine in a few lines of hex. A green suite here means almost
+    nothing. The unit testbenches
+    (`test/{alu,pc,register_file,fetch_stage,logic_test}_tb.v`) mostly `$display`
+    and dump waveforms rather than assert, so they do not close the gap. The
+    highest-value next step for this repo is a directed hazard-and-ISA test
+    program set, not more RTL.
 
 14. **[repo hygiene] Compiled simulator binaries were committed, carrying a
     hardcoded macOS path.** `riscv_sim` and `sim/*_sim` were tracked in git. Each
