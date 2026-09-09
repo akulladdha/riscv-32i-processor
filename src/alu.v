@@ -13,13 +13,12 @@ module alu (
             4'b0010: result = a & b; //and
             4'b0011: result = a | b; //or
             
-            //discarded for now
-            /*4'b0100: result = a ^ b; //xor
-            4'b0101: result = ~(a | b); //nor
-            4'b0110: result = ~(a & b); //nand
-            4'b0111: result = (a<b) ? 32'd1 : 32'd0; //set less than
-            4'b1000: result = a << b[4:0]; //shift left logical
-            4'b1001: result = a >> b[4:0]; //shift right logical*/
+            4'b0100: result = a ^ b; //xor
+            4'b0101: result = a << b[4:0]; //sll, shamt masked to 5 bits
+            4'b0110: result = a >> b[4:0]; //srl
+            4'b0111: result = $signed(a) >>> b[4:0]; //sra
+            4'b1000: result = ($signed(a) < $signed(b)) ? 32'd1 : 32'd0; //slt
+            4'b1001: result = (a < b) ? 32'd1 : 32'd0; //sltu
             default: result = 32'b0; 
         endcase
     end

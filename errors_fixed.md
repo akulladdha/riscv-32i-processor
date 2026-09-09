@@ -84,3 +84,52 @@ TEST raw3: PASS
 TEST top_tb (original): PASS
 passed: 2   failed: 0
 ```
+
+---
+
+## Fix 1 — R-type SLL SLT SLTU XOR SRL SRA all executed as ADD
+
+**Known Issue #2 (R-type half) · correctness bug · `src/alu.v`, `src/riscv_top.v`**
+
+### What was wrong
+
+Two gaps stacked. The ALU implemented only four operations; the other six sat
+commented out (`alu.v:17-22`). And the ALU-control decoder handled only
+`funct3` 000/111/110, sending everything else to its `default` of ADD
+(`riscv_top.v:211`). So six R-type instructions silently performed additions.
+
+The commented-out draft was also wrong where it existed: its "set less than"
+used `(a < b)`, an unsigned compare on `[31:0]` operands — `SLTU` semantics
+under an `SLT` label.
+
+### Failing evidence
+
+Every result was an addition, which is what makes this dangerous — plausible
+numbers, no X, no crash:
+
+```
+FAIL XOR  x3: expected 6,          got 22          (12 + 10)
+FAIL SLL  x4: expected 48,         got 14          (12 + 2)
+FAIL SRA  x10: expected 0xFFFFFFFC, got 0xFFFFFFF2 (-16 + 2)
+FAIL SLT  x12: expected 1,         got 0xFFFFFFFC  (-16 + 12)
+FAIL SLL  x17 shamt-mask: expected 24, got 45      (12 + 33)
+... 10 failures total
+```
+
+### The change
+
+11 lines. Six ALU cases, five decoder cases.
+
+`SRA` uses `$signed(a) >>> b[4:0]`, `SLT` uses `$signed(a) < $signed(b)`, and
+`SLTU` uses a plain unsigned compare — the signed/unsigned distinction the old
+draft got wrong. All shifts mask the shift amount to `b[4:0]`, tested explicitly
+by shifting with 33 and expecting a shift of 1.
+
+### Passing evidence
+
+```
+TEST raw3: PASS
+TEST rtype: PASS
+TEST top_tb (original): PASS
+passed: 3   failed: 0
+```
