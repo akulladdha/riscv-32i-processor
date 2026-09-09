@@ -28,6 +28,7 @@ module riscv_top #(
     wire        id_reg_write, id_alu_src, id_mem_read, id_mem_write, id_mem_to_reg, id_branch;
     wire [1:0]  id_alu_op;
     wire [1:0]  id_alu_a_src;
+    wire        id_jump;
 
     //ID/EX pipeline register
     reg [31:0] id_ex_pc;
@@ -48,6 +49,7 @@ module riscv_top #(
     reg        id_ex_branch;
     reg [1:0]  id_ex_alu_op;
     reg [1:0]  id_ex_alu_a_src;
+    reg        id_ex_jump;
 
     //EX stage wires
     reg  [3:0]  ex_alu_control;
@@ -103,11 +105,14 @@ module riscv_top #(
         endcase
     end
     wire branch_taken = id_ex_branch && branch_cond;
-    wire flush        = branch_taken;
+    //JAL is unconditional: it redirects as soon as it reaches EX
+    wire jump_taken   = id_ex_jump;
+    wire redirect     = branch_taken || jump_taken;
+    wire flush        = redirect;
 
     assign if_pc_plus4 = pc_out + 32'd4;
     //use ex_branch_target directly — it's valid while BEQ is in EX
-    wire [31:0] pc_next = branch_taken ? ex_branch_target : if_pc_plus4;
+    wire [31:0] pc_next = redirect ? ex_branch_target : if_pc_plus4;
 
     //load-use hazard: stall if LW in EX and dependent instruction in ID
     wire stall = id_ex_mem_read &&
@@ -148,10 +153,13 @@ module riscv_top #(
     wire [31:0] b_ext = {{19{if_id_instr[31]}}, if_id_instr[31], if_id_instr[7],
                           if_id_instr[30:25], if_id_instr[11:8], 1'b0};
     wire [31:0] u_ext = {if_id_instr[31:12], 12'b0};
+    wire [31:0] j_ext = {{11{if_id_instr[31]}}, if_id_instr[31], if_id_instr[19:12],
+                         if_id_instr[20], if_id_instr[30:21], 1'b0};
     assign id_imm_ext = (id_opcode == 7'b0000011 || id_opcode == 7'b0010011) ? i_ext :
                         (id_opcode == 7'b0100011) ? s_ext :
                         (id_opcode == 7'b1100011) ? b_ext :
                         (id_opcode == 7'b0110111 || id_opcode == 7'b0010111) ? u_ext :
+                        (id_opcode == 7'b1101111) ? j_ext :
                         32'b0;
 
     control_unit my_cu (
@@ -163,7 +171,8 @@ module riscv_top #(
         .mem_to_reg(id_mem_to_reg),
         .alu_op(id_alu_op),
         .branch(id_branch),
-        .alu_a_src(id_alu_a_src)
+        .alu_a_src(id_alu_a_src),
+        .jump(id_jump)
     );
 
     //register reads happen in ID, writeback comes from MEM/WB
@@ -200,6 +209,7 @@ module riscv_top #(
             id_ex_branch     <= 1'b0;
             id_ex_alu_op     <= 2'b0;
             id_ex_alu_a_src  <= 2'b0;
+            id_ex_jump       <= 1'b0;
         end else begin
             id_ex_pc         <= if_id_pc;
             id_ex_pc_plus4   <= if_id_pc_plus4;
@@ -219,6 +229,7 @@ module riscv_top #(
             id_ex_branch     <= id_branch;
             id_ex_alu_op     <= id_alu_op;
             id_ex_alu_a_src  <= id_alu_a_src;
+            id_ex_jump       <= id_jump;
         end
     end
 
@@ -290,7 +301,10 @@ module riscv_top #(
                           (forward_b == 2'b01) ? wb_write_data :
                           id_ex_reg_data2;
 
-    assign ex_alu_src2     = id_ex_alu_src ? id_ex_imm_ext : ex_alu_b_reg;
+    //a jump computes its link value as PC + 4 through the normal ALU path,
+    //so no extra writeback mux is needed
+    assign ex_alu_src2     = id_ex_jump  ? 32'd4 :
+                             id_ex_alu_src ? id_ex_imm_ext : ex_alu_b_reg;
     assign ex_branch_target = id_ex_pc + id_ex_imm_ext;
 
     alu my_alu (

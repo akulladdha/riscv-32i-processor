@@ -411,3 +411,52 @@ TEST bcond: PASS  TEST itype: PASS  TEST loads: PASS   TEST raw3: PASS
 TEST rtype: PASS  TEST stores: PASS TEST utype: PASS   TEST top_tb: PASS
 passed: 8   failed: 0
 ```
+
+---
+
+## Fix 7 — JAL executed as a silent NOP
+
+**Known Issue #5 (JAL) · correctness bug · `src/control_unit.v`, `src/riscv_top.v`**
+
+### What was wrong
+
+Opcode `1101111` was not decoded. It fell to the empty `default`, so no link
+register was written and the PC never redirected — control simply fell through
+into the instructions the jump was supposed to skip.
+
+### Failing evidence
+
+```
+FAIL JAL link x5=8: expected 8,  got 0
+FAIL flushed x2=0:  expected 0,  got 99   <-- fell through
+FAIL flushed x3=0:  expected 0,  got 99   <-- fell through
+ok   target ran x4=7
+```
+
+### The change
+
+18 lines, smaller than expected, because the link value rides existing hardware
+instead of needing a new writeback mux. `JAL` sets `alu_a_src = 2'b01` (PC) and
+the EX stage forces the ALU's B operand to 4:
+
+```verilog
+assign ex_alu_src2 = id_ex_jump  ? 32'd4 :
+                     id_ex_alu_src ? id_ex_imm_ext : ex_alu_b_reg;
+```
+
+So the ALU computes `PC + 4`, which flows to the register file through the
+normal ALU → EX/MEM → MEM/WB → writeback path with `mem_to_reg = 0`. No new
+pipeline field past EX, and MEM/WB forwarding of a link register works for free.
+
+The jump target needs no new adder either: `ex_branch_target` is already
+`id_ex_pc + id_ex_imm_ext`, which is exactly `pc + j_imm`.
+
+`branch_taken` and the new `jump_taken` merge into one `redirect` signal driving
+both the PC mux and the flush, so `JAL` reuses the branch flush unchanged — and
+the flush depth of 2 is already correct for a redirect resolved in EX.
+
+### Passing evidence
+
+```
+passed: 9   failed: 0
+```
