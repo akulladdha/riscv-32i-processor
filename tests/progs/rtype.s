@@ -15,3 +15,6 @@
     slt  x14, x1, x9        # 0
     sltu x15, x1, x9        # 1
     sll  x17, x1, x16       # 12 << (33 & 31) = 24
+    sub  x18, x1, x2        # 2   (these three were implemented but untested)
+    and  x19, x1, x2        # 8
+    or   x21, x1, x2        # 14

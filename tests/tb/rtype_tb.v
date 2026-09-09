@@ -16,6 +16,9 @@ module rtype_tb();
         chk("SLT  x14", dut.my_regfile.registers[14], 32'd0);
         chk("SLTU x15", dut.my_regfile.registers[15], 32'd1);
         chk("SLL  x17 shamt-mask", dut.my_regfile.registers[17], 32'd24);
+        chk("SUB  x18", dut.my_regfile.registers[18], 32'd2);
+        chk("AND  x19", dut.my_regfile.registers[19], 32'd8);
+        chk("OR   x21", dut.my_regfile.registers[21], 32'd14);
         finish_test("rtype");
     end
 endmodule

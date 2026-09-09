@@ -555,3 +555,32 @@ Under mutation 4, the checks reading `x0` into another register (`x1`, `x2`,
 independently of the write path, so a broken write-discard is invisible through
 reads. Only inspecting `registers[0]` directly catches it. A test suite that
 checked `x0` only by reading it would have scored a pass on broken hardware.
+
+---
+
+## Coverage audit finding — three implemented instructions had no test
+
+While building `COVERAGE.md` I checked each instruction against an actual
+assertion rather than assuming. `SUB`, `AND`, and `OR` were implemented from
+the start — they are three of the original eight working instructions — and no
+test anywhere asserted on them. `rtype.s` had covered only the six *newly
+added* R-type ops, and `itype.s` covers `ANDI`/`ORI`, which are different
+instructions.
+
+Added to `tests/progs/rtype.s`, all passing. Recorded here because the honest
+version of a coverage report is the one that finds its own gaps.
+
+---
+
+## Final state
+
+**Instructions: 38 / 40 RV32I implemented and tested (95%).** Baseline was
+8 / 40. Not implemented: `ECALL` and `EBREAK`, both Tier 3 (trap machinery),
+deliberately out of scope.
+
+**Hazards: 13 / 13 scenarios covered**, each mutation-tested.
+
+**Suite: 15 tests, all passing**, including the repo's original `test/top_tb.v`
+unmodified.
+
+Full detail in `COVERAGE.md`.
