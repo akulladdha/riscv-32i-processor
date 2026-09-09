@@ -218,6 +218,20 @@ module riscv_top #(
                     default: ex_alu_control = 4'b0000;
                 endcase
             end
+            //I-type ALU: same funct3 map as R-type, but funct7 applies only to
+            //shifts. funct3 000 is always ADDI - there is no SUBI.
+            2'b11: begin
+                case (id_ex_funct3)
+                    3'b000:  ex_alu_control = 4'b0000; //ADDI
+                    3'b001:  ex_alu_control = 4'b0101; //SLLI
+                    3'b010:  ex_alu_control = 4'b1000; //SLTI
+                    3'b011:  ex_alu_control = 4'b1001; //SLTIU
+                    3'b100:  ex_alu_control = 4'b0100; //XORI
+                    3'b101:  ex_alu_control = id_ex_funct7[5] ? 4'b0111 : 4'b0110; //SRAI or SRLI
+                    3'b110:  ex_alu_control = 4'b0011; //ORI
+                    3'b111:  ex_alu_control = 4'b0010; //ANDI
+                endcase
+            end
             default: ex_alu_control = 4'b0000;
         endcase
     end

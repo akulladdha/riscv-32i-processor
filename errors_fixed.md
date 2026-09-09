@@ -133,3 +133,48 @@ TEST rtype: PASS
 TEST top_tb (original): PASS
 passed: 3   failed: 0
 ```
+
+---
+
+## Fix 2 — Every I-type ALU instruction executed as ADDI
+
+**Known Issue #2 · correctness bug · `src/control_unit.v`, `src/riscv_top.v`**
+
+### What was wrong
+
+`control_unit.v:26-30` matched opcode `0010011` and hardcoded `alu_op = 2'b00`
+with the comment "force add", never inspecting `funct3`. All nine I-type ALU
+instructions performed an addition.
+
+### Failing evidence
+
+```
+FAIL XORI  x3:  expected 6,          got 22          (12 + 10)
+FAIL ANDI  x5:  expected 8,          got 22
+FAIL SLTI  x6:  expected 1,          got 0xFFFFFFF0  (-16 + 0)
+FAIL SLLI  x10: expected 48,         got 14          (12 + 2)
+FAIL SRAI  x12: expected 0xFFFFFFFC, got 1010        (-16 + 0x402)
+... 10 failures
+```
+
+`ORI x4, x1, 3` **passed** while broken, because `12 | 3` and `12 + 3` are both
+15. A weaker test would have scored that as working — a good reminder that
+operand choice matters as much as coverage.
+
+### The change
+
+16 lines: one decoder line plus a `funct3` case. A new `alu_op = 2'b11` means
+"I-type ALU", decoded like R-type except `funct3` 000 is always ADDI (there is
+no SUBI) and `funct7[5]` matters only for `SRAI` vs `SRLI`. All eight `funct3`
+values are listed, so the case needs no default and infers no latch.
+
+Shift immediates need no special handling: `imm[4:0]` already lands in the low
+bits of the sign-extended immediate, and the ALU masks to `b[4:0]`.
+
+### Passing evidence
+
+```
+TEST itype: PASS      TEST raw3: PASS
+TEST rtype: PASS      TEST top_tb (original): PASS
+passed: 4   failed: 0
+```

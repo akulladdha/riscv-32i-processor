@@ -23,10 +23,10 @@ always @(*) begin
             alu_src    = 0;
             alu_op     = 2'b10;
         end
-        7'b0010011: begin //I-type ADDI
+        7'b0010011: begin //I-type ALU: ADDI SLTI SLTIU XORI ORI ANDI SLLI SRLI SRAI
             reg_write  = 1;
             alu_src    = 1;
-            alu_op     = 2'b00; //force add
+            alu_op     = 2'b11; //decode funct3 (and funct7[5] for shifts)
         end
         7'b0000011: begin // Load (LW)
             reg_write  = 1;
