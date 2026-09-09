@@ -232,3 +232,62 @@ TEST itype: PASS   TEST raw3: PASS   TEST rtype: PASS
 TEST utype: PASS   TEST top_tb (original): PASS
 passed: 5   failed: 0
 ```
+
+---
+
+## Fix 4 — Every conditional branch behaved as BEQ; BNE was inverted
+
+**Known Issue #3 · correctness bug · `src/riscv_top.v`**
+
+### What was wrong
+
+`control_unit.v:48-56` keyed on opcode `1100011` alone and always set
+`alu_op = 2'b01` (subtract). `riscv_top.v:86` then tested only `ex_zero`.
+`funct3` reached EX and was ignored. So `BNE` branched exactly when it must
+not, and `BLT`/`BGE`/`BLTU`/`BGEU` were wrong in whichever direction happened
+to differ from equality.
+
+### Failing evidence
+
+A `1` in a guarded register means the branch fell through when it should have
+jumped over:
+
+```
+FAIL BNE  taken x10=0: got 1
+ok   BEQ  not taken x11=1
+FAIL BLT  taken x12=0: got 1
+ok   BLTU not taken x13=1
+FAIL BGE  taken x14=0: got 1
+FAIL BGEU taken x15=0: got 1
+```
+
+The two that passed are the two whose correct answer coincides with "not
+equal, so BEQ does not branch" — again showing why both directions must be
+tested.
+
+### The change
+
+15 lines in `riscv_top.v`. A `funct3`-selected comparator replaces the bare
+`ex_zero` test:
+
+```verilog
+3'b100: branch_cond = ($signed(ex_alu_a) <  $signed(ex_alu_b_reg)); //BLT
+3'b110: branch_cond = (ex_alu_a <  ex_alu_b_reg);                   //BLTU
+```
+
+Signed comparisons use `$signed` casts; unsigned use raw operands. The
+comparator reads `ex_alu_a` and `ex_alu_b_reg` — the **forwarded** operands —
+so a branch can compare values still in flight, which the existing
+`test/top_tb.v` depends on.
+
+`control_unit` is untouched: `alu_op = 2'b01` still drives a subtract whose
+result is now unused for the branch decision. Removing it would be a
+refactor, not a fix, so it stays. It is listed as remaining dead logic.
+
+### Passing evidence
+
+```
+TEST bcond: PASS   TEST itype: PASS   TEST raw3: PASS
+TEST rtype: PASS   TEST utype: PASS   TEST top_tb (original): PASS
+passed: 6   failed: 0
+```

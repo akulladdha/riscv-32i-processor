@@ -87,7 +87,21 @@ module riscv_top #(
     //detect branch taken while BEQ is still in EX (early detection)
     //using ex_mem signals would be 1 cycle too late — the wrong instruction
     //would already be latched into ID/EX and propagate one more stage
-    wire branch_taken = id_ex_branch && ex_zero;
+    //branch condition selected by funct3, evaluated on the forwarded operands
+    //so a branch can compare values that are still in flight
+    reg branch_cond;
+    always @(*) begin
+        case (id_ex_funct3)
+            3'b000:  branch_cond = (ex_alu_a == ex_alu_b_reg);                   //BEQ
+            3'b001:  branch_cond = (ex_alu_a != ex_alu_b_reg);                   //BNE
+            3'b100:  branch_cond = ($signed(ex_alu_a) <  $signed(ex_alu_b_reg)); //BLT
+            3'b101:  branch_cond = ($signed(ex_alu_a) >= $signed(ex_alu_b_reg)); //BGE
+            3'b110:  branch_cond = (ex_alu_a <  ex_alu_b_reg);                   //BLTU
+            3'b111:  branch_cond = (ex_alu_a >= ex_alu_b_reg);                   //BGEU
+            default: branch_cond = 1'b0;
+        endcase
+    end
+    wire branch_taken = id_ex_branch && branch_cond;
     wire flush        = branch_taken;
 
     assign if_pc_plus4 = pc_out + 32'd4;
