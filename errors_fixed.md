@@ -178,3 +178,57 @@ TEST itype: PASS      TEST raw3: PASS
 TEST rtype: PASS      TEST top_tb (original): PASS
 passed: 4   failed: 0
 ```
+
+---
+
+## Fix 3 — LUI and AUIPC executed as silent NOPs
+
+**Known Issue #5 (U-type) · correctness bug · `src/control_unit.v`, `src/riscv_top.v`**
+
+### What was wrong
+
+Neither opcode was decoded. Both fell to `control_unit.v`'s empty `default`,
+inheriting `reg_write = 0` — so both vanished with no error and no X.
+
+### Failing evidence
+
+```
+FAIL LUI   x1: expected 0x12345000, got 0
+FAIL LUI   x2: expected 0xFFFFF000, got 0
+FAIL AUIPC x3: expected 8,          got 0
+FAIL AUIPC x4: expected 0x100C,     got 0
+FAIL LUI+ADDI x5: expected 0x12345111, got 273
+```
+
+### Why this fix is ~22 lines, not 15
+
+Both instructions need a **new operand-A source**: `LUI` computes `0 + imm`,
+`AUIPC` computes `pc + imm`. The ALU's A operand came only from the
+register/forwarding path, and neither instruction's `rs1` field is a register
+specifier — in both, those bits are immediate. All four `alu_op` encodings were
+already spent (`00` ADD, `01` SUB, `10` R-type, `11` I-type), so there was no
+free ALU code to overload either.
+
+That leaves a 2-bit `alu_a_src` mux, which serves both instructions at once.
+Splitting this into two commits would have meant adding a 1-bit signal and then
+immediately widening it — refactoring while fixing. One fix, two instructions.
+
+### The change
+
+- `control_unit`: new `alu_a_src` output (`00` register, `01` PC, `10` zero),
+  plus decode cases for `0110111` and `0010111`.
+- `riscv_top`: `u_ext = {instr[31:12], 12'b0}` added to the immediate
+  generator, the signal piped through ID/EX, and two new inputs on the
+  `ex_alu_a` mux ahead of the forwarding inputs.
+
+Placing the new inputs *ahead* of forwarding is deliberate: forwarding compares
+`id_ex_rs1` against in-flight destinations, and for `LUI`/`AUIPC` those bits are
+immediate data. A spurious match must not override the PC or the zero.
+
+### Passing evidence
+
+```
+TEST itype: PASS   TEST raw3: PASS   TEST rtype: PASS
+TEST utype: PASS   TEST top_tb (original): PASS
+passed: 5   failed: 0
+```

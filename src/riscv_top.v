@@ -27,6 +27,7 @@ module riscv_top #(
     wire [31:0] id_imm_ext;
     wire        id_reg_write, id_alu_src, id_mem_read, id_mem_write, id_mem_to_reg, id_branch;
     wire [1:0]  id_alu_op;
+    wire [1:0]  id_alu_a_src;
 
     //ID/EX pipeline register
     reg [31:0] id_ex_pc;
@@ -46,6 +47,7 @@ module riscv_top #(
     reg        id_ex_mem_to_reg;
     reg        id_ex_branch;
     reg [1:0]  id_ex_alu_op;
+    reg [1:0]  id_ex_alu_a_src;
 
     //EX stage wires
     reg  [3:0]  ex_alu_control;
@@ -130,9 +132,11 @@ module riscv_top #(
     wire [31:0] s_ext = {{20{if_id_instr[31]}}, if_id_instr[31:25], if_id_instr[11:7]};
     wire [31:0] b_ext = {{19{if_id_instr[31]}}, if_id_instr[31], if_id_instr[7],
                           if_id_instr[30:25], if_id_instr[11:8], 1'b0};
+    wire [31:0] u_ext = {if_id_instr[31:12], 12'b0};
     assign id_imm_ext = (id_opcode == 7'b0000011 || id_opcode == 7'b0010011) ? i_ext :
                         (id_opcode == 7'b0100011) ? s_ext :
                         (id_opcode == 7'b1100011) ? b_ext :
+                        (id_opcode == 7'b0110111 || id_opcode == 7'b0010111) ? u_ext :
                         32'b0;
 
     control_unit my_cu (
@@ -143,7 +147,8 @@ module riscv_top #(
         .mem_write(id_mem_write),
         .mem_to_reg(id_mem_to_reg),
         .alu_op(id_alu_op),
-        .branch(id_branch)
+        .branch(id_branch),
+        .alu_a_src(id_alu_a_src)
     );
 
     //register reads happen in ID, writeback comes from MEM/WB
@@ -179,6 +184,7 @@ module riscv_top #(
             id_ex_mem_to_reg <= 1'b0;
             id_ex_branch     <= 1'b0;
             id_ex_alu_op     <= 2'b0;
+            id_ex_alu_a_src  <= 2'b0;
         end else begin
             id_ex_pc         <= if_id_pc;
             id_ex_pc_plus4   <= if_id_pc_plus4;
@@ -197,6 +203,7 @@ module riscv_top #(
             id_ex_mem_to_reg <= id_mem_to_reg;
             id_ex_branch     <= id_branch;
             id_ex_alu_op     <= id_alu_op;
+            id_ex_alu_a_src  <= id_alu_a_src;
         end
     end
 
@@ -256,7 +263,11 @@ module riscv_top #(
             forward_b = 2'b00;
     end
 
-    assign ex_alu_a     = (forward_a == 2'b10) ? ex_mem_alu_result :
+    //AUIPC takes PC as operand A, LUI takes zero; both bypass forwarding
+    //because neither instruction's rs1 field is a register specifier.
+    assign ex_alu_a     = (id_ex_alu_a_src == 2'b01) ? id_ex_pc :
+                          (id_ex_alu_a_src == 2'b10) ? 32'b0 :
+                          (forward_a == 2'b10) ? ex_mem_alu_result :
                           (forward_a == 2'b01) ? wb_write_data :
                           id_ex_reg_data1;
 
