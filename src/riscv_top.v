@@ -70,6 +70,7 @@ module riscv_top #(
     reg        ex_mem_mem_write;
     reg        ex_mem_mem_to_reg;
     reg        ex_mem_branch;
+    reg [2:0]  ex_mem_funct3;
 
     //MEM stage wires
     wire [31:0] mem_read_data;
@@ -314,6 +315,7 @@ module riscv_top #(
             ex_mem_mem_write     <= 1'b0;
             ex_mem_mem_to_reg    <= 1'b0;
             ex_mem_branch        <= 1'b0;
+            ex_mem_funct3        <= 3'b0;
         end else begin
             ex_mem_pc_plus4      <= id_ex_pc_plus4;
             ex_mem_branch_target <= ex_branch_target;
@@ -326,6 +328,7 @@ module riscv_top #(
             ex_mem_mem_write     <= id_ex_mem_write;
             ex_mem_mem_to_reg    <= id_ex_mem_to_reg;
             ex_mem_branch        <= id_ex_branch;
+            ex_mem_funct3        <= id_ex_funct3;
         end
     end
 
@@ -338,6 +341,22 @@ module riscv_top #(
         .read_data(mem_read_data)
     );
 
+    //sub-word load extraction and extension. The word comes back from data_mem
+    //whole; funct3 picks the width and whether to sign- or zero-extend, and the
+    //low address bits pick which byte/halfword within the word (little-endian).
+    wire [7:0]  mem_byte = mem_read_data >> (8 * ex_mem_alu_result[1:0]);
+    wire [15:0] mem_half = mem_read_data >> (16 * ex_mem_alu_result[1]);
+    reg  [31:0] mem_load_data;
+    always @(*) begin
+        case (ex_mem_funct3)
+            3'b000:  mem_load_data = {{24{mem_byte[7]}},  mem_byte}; //LB
+            3'b001:  mem_load_data = {{16{mem_half[15]}}, mem_half}; //LH
+            3'b100:  mem_load_data = {24'b0, mem_byte};              //LBU
+            3'b101:  mem_load_data = {16'b0, mem_half};              //LHU
+            default: mem_load_data = mem_read_data;                  //LW
+        endcase
+    end
+
     //MEM/WB register
     always @(posedge clk) begin
         if (rst) begin
@@ -348,7 +367,7 @@ module riscv_top #(
             mem_wb_mem_to_reg  <= 1'b0;
         end else begin
             mem_wb_alu_result  <= ex_mem_alu_result;
-            mem_wb_read_data   <= mem_read_data;
+            mem_wb_read_data   <= mem_load_data;
             mem_wb_rd          <= ex_mem_rd;
             mem_wb_reg_write   <= ex_mem_reg_write;
             mem_wb_mem_to_reg  <= ex_mem_mem_to_reg;

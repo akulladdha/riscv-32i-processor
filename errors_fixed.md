@@ -291,3 +291,58 @@ TEST bcond: PASS   TEST itype: PASS   TEST raw3: PASS
 TEST rtype: PASS   TEST utype: PASS   TEST top_tb (original): PASS
 passed: 6   failed: 0
 ```
+
+---
+
+## Fix 5 — LB LH LBU LHU all returned a full word
+
+**Known Issue #4 (load half) · correctness bug · `src/riscv_top.v`**
+
+### What was wrong
+
+`control_unit.v:31-38` decoded opcode `0000011` without looking at `funct3`,
+and `id_ex_funct3` was dropped after EX — it never reached MEM or WB. The
+memory returned a whole word and the whole word was written back. The
+LB/LH-versus-LBU/LHU sign-extension distinction did not exist to get wrong.
+
+### Failing evidence
+
+Every sub-word load returned the full stored word `0x87654321`:
+
+```
+ok   LW  x3 = 0x87654321
+FAIL LB  x4: expected 0x00000021, got 0x87654321
+FAIL LB  x5 sign-ext: expected 0xFFFFFF87, got 0x87654321
+FAIL LBU x6 zero-ext: expected 0x00000087, got 0x87654321
+FAIL LH  x8 sign-ext: expected 0xFFFF8765, got 0x87654321
+... 6 failures
+```
+
+### The change
+
+20 lines. `funct3` gains an EX/MEM pipeline field, and the MEM stage extracts
+and extends:
+
+```verilog
+wire [7:0]  mem_byte = mem_read_data >> (8  * ex_mem_alu_result[1:0]);
+wire [15:0] mem_half = mem_read_data >> (16 * ex_mem_alu_result[1]);
+```
+
+The low address bits select the byte/halfword within the word, little-endian.
+`LB`/`LH` replicate the top bit; `LBU`/`LHU` zero-fill; the `default` passes the
+word through, so `LW` is unchanged.
+
+The extension sits in MEM, before the MEM/WB latch, rather than in WB. That
+keeps it to one new pipeline field instead of two, and means `mem_wb_read_data`
+holds the already-extended value — so the existing MEM/WB forwarding path
+forwards the correct extended value with no change.
+
+`data_mem` itself is untouched; this is entirely a read-path change.
+
+### Passing evidence
+
+```
+TEST bcond: PASS  TEST itype: PASS  TEST loads: PASS  TEST raw3: PASS
+TEST rtype: PASS  TEST utype: PASS  TEST top_tb (original): PASS
+passed: 7   failed: 0
+```
