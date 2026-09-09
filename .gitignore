@@ -1,0 +1,29 @@
+# ---- macOS cruft ----
+.DS_Store
+._*
+__MACOSX/
+
+# ---- Icarus Verilog / simulation output ----
+a.out
+*.vvp
+*.vcd
+*.fst
+
+# Compiled vvp images emitted by `iverilog -o <name>` with no extension.
+# Kept explicit rather than a wildcard so real sources are never caught.
+/riscv_sim
+/sim/*_sim
+
+# ---- Vivado generated ----
+.Xil/
+*.runs/
+*.cache/
+*.hw/
+*.sim/
+*.gen/
+*.ip_user_files/
+*.jou
+*.log
+*.str
+
+# Keep: *.xpr, *.xdc, and all TCL are deliberately NOT ignored.
