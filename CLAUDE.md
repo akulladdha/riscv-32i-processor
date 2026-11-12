@@ -1,535 +1,275 @@
 # CLAUDE.md
 
-Working notes for a 5-stage pipelined RV32I-subset processor. Written from a
-full read of the RTL on 2026-09-09. Findings cite file and line. Where the
-README and the RTL disagree, the RTL wins and the disagreement is recorded.
+Working notes for a 5-stage pipelined RV32I processor in Verilog-2001.
+Rewritten 2026-11-12 from a full read of the RTL at commit `c83428f`, with the
+test suite run on this machine (15/15 pass). Where any doc and the RTL
+disagree, the RTL wins.
 
-Icarus Verilog 12.0 was installed during the audit, so the integration test and
-the headline bugs below are **verified by execution**, not inferred. Findings
-carrying a "Reproduced" note were run on this machine.
+Companion docs — read these rather than duplicating them here:
 
----
-
-## Project Overview
-
-A 32-bit, 5-stage, in-order pipelined processor in plain Verilog-2001 (not
-SystemVerilog, despite the repo description — no `logic`, `always_ff`, or
-`typedef` appears anywhere). Originally developed on macOS with MacPorts
-iverilog + GTKWave, then copied to Windows.
-
-Stated target hardware is a Basys 3 (Artix-7 XC7A35T). **Nothing in this repo
-targets an FPGA.** There is no `.xdc`, no `.xpr`, no TCL, no bitstream flow,
-and the top module has no I/O ports. The FPGA target is an aspiration, not an
-implemented flow. See Known Issues #8.
-
-The implemented ISA is far smaller than "RV32I". Eight instructions work:
-`ADD SUB AND OR ADDI LW SW BEQ`. The rest of RV32I is either absent or, worse,
-silently mis-executes (Known Issues #2–#5).
-
----
-
-## Architecture As Implemented
-
-### Harvard check
-
-| Question | Answer |
+| File | Contents |
 |---|---|
-| IMEM and DMEM separate, independent ports? | **Yes.** `instruction_mem` (riscv_top.v:108) and `data_mem` (riscv_top.v:286) are distinct modules with distinct arrays and no shared port. |
-| Can IF and MEM both access memory in the same cycle? | **Yes.** IF drives IMEM from `pc_out`; MEM drives DMEM from `ex_mem_alu_result`. No arbitration, no structural hazard. |
-| IMEM synchronous-read (BRAM-inferrable)? | **No.** `assign instruction = memory[addr >> 2]` — instruction_mem.v:12 is combinational. The module has no clock port at all. |
-| DMEM synchronous-read (BRAM-inferrable)? | **No.** `assign read_data = (mem_read) ? memory[addr[11:2]] : 32'b0` — data_mem.v:18 is combinational *and* gated by `mem_read`. Writes are synchronous (data_mem.v:12–16); reads are not. |
-| Can a store reach instruction memory? | **No.** `instruction_mem` has no write port and no clock (instruction_mem.v:1–4). Contents come only from `$readmemh` at elaboration (instruction_mem.v:9). Instruction memory is genuinely read-only. |
-
-The Harvard split is real and correct. The memory *style* is the problem, not
-the topology — see Known Issues #6 and #7.
-
-### Pipeline check
-
-| Item | Status | Location |
-|---|---|---|
-| IF/ID clocked register | **Present** | riscv_top.v:114–124 |
-| ID/EX clocked register | **Present** | riscv_top.v:161–199 |
-| EX/MEM clocked register | **Present** | riscv_top.v:258–284 |
-| MEM/WB clocked register | **Present** | riscv_top.v:296–310 |
-| Forwarding EX/MEM → EX | **Present** | riscv_top.v:222, 230 (select); 238, 242 (mux) |
-| Forwarding MEM/WB → EX | **Present** | riscv_top.v:225, 232 (select); 239, 243 (mux) |
-| Store-data forwarding into MEM | **Present** | riscv_top.v:276 — `ex_mem_reg_data2 <= ex_alu_b_reg` captures the *forwarded* rs2, not the stale `id_ex_reg_data2`. Correct. |
-| Load-use stall | **Present and correct** | Detect riscv_top.v:94–96; PC frozen riscv_top.v:99; IF/ID held riscv_top.v:119 (`else if (!stall)`); ID/EX bubbled riscv_top.v:162. All three actions present. |
-| Branch resolution stage | **EX** | riscv_top.v:86 — `branch_taken = id_ex_branch && ex_zero` |
-| Flush depth | **2, and it kills the right stages** | riscv_top.v:115 zeroes IF/ID (kills the instruction in IF); riscv_top.v:162 zeroes ID/EX (kills the instruction in ID). The branch itself is in EX and completes. Verified by hand-trace against `sample_program.hex`. |
-| Register file same-cycle write/read | **ABSENT — this is a real bug** | register_file.v:15–16 read combinationally from the array; register_file.v:24–26 write on `posedge clk`. No write-first transparency, no internal bypass. See Known Issues #1. |
-| x0 hardwired on read | **Present** | register_file.v:15–16 — both read ports mux to `32'b0` when the address is 0. |
-| x0 hardwired on write | **Present** | register_file.v:24 — `rg_write_en && (rg_des_addr != 5'b0)`. |
-| Reset consistency | **Consistent — all synchronous** | pc.v:8–13, register_file.v:18–23, and all four pipeline registers (riscv_top.v:115, 162, 259, 297) use `always @(posedge clk)` with no reset in the sensitivity list. Uniformly sync. This is the Xilinx-preferred style; no issue here. |
-| Inferred latches | **None** | `control_unit` assigns all seven outputs unconditionally before its `case` (control_unit.v:13–19). `alu` has a `default` (alu.v:23). The ALU-control decoder has `default` at both levels (riscv_top.v:211, 214). The forwarding block is a complete if/else-if/else chain (riscv_top.v:220–236). Every combinational output is assigned on every path. |
-| Combinational loops | **None** | The only feedback path is `pc_out → if_pc_plus4 → pc_next → pc_in_mux → pc`, broken by the clocked register in pc.v:8. `branch_taken` derives from `id_ex_branch` (a register) and `ex_zero` (ALU output of registered/forwarded operands). No loop. |
-
-### Branch mechanism, in detail
-
-Resolution is early — in EX, off `id_ex_branch` rather than `ex_mem_branch`
-(riscv_top.v:86, with the design comment at riscv_top.v:83–85). The EX/MEM stage
-*does* latch `ex_mem_branch`, `ex_mem_zero`, and `ex_mem_branch_target`
-(riscv_top.v:270, 263, 261) but **nothing ever reads them** — dead registers left
-over from a later-resolution design. Synthesis will trim them; they mislead a
-reader. See Known Issues #12.
-
-The branch target is `id_ex_pc + id_ex_imm_ext` (riscv_top.v:247) — branch PC
-plus the B-immediate, which is correct. B-immediate assembly at
-riscv_top.v:129–130 is correct, including the implicit trailing zero.
-
-The PC mux priority is `stall ? pc_out : (branch_taken ? target : pc+4)`
-(riscv_top.v:91, 99) — **stall outranks branch_taken**. If both asserted, the
-branch target would be silently dropped. Today this is unreachable, because
-`stall` requires `id_ex_mem_read` and `branch_taken` requires `id_ex_branch`,
-and one instruction cannot be both. It is latent, not live. See Known Issues #17.
-
-### ISA coverage
-
-Present and believed correct: `ADD`, `SUB`, `AND`, `OR` (R-type,
-control_unit.v:21–25 plus ALU decode riscv_top.v:206–213); `ADDI`
-(control_unit.v:26–30); `LW` (control_unit.v:31–38); `SW` (control_unit.v:40–47);
-`BEQ` (control_unit.v:48–56).
-
-Absent — decoded by `default` (control_unit.v:59–61) into an all-zero control
-word, i.e. **silently executed as a NOP with no error**:
-`LUI`, `AUIPC`, `JAL`, `JALR`, `FENCE`, `ECALL`, `EBREAK`.
-
-Absent — the opcode *is* matched but `funct3` is ignored, so these execute as
-**the wrong instruction, silently**:
-
-- All of `SLLI SRLI SRAI SLTI SLTIU XORI ORI ANDI` execute as `ADDI`.
-- All of `SLL SRL SRA SLT SLTU XOR` execute as `ADD` (ALU decode default,
-  riscv_top.v:211).
-- All of `BNE BLT BGE BLTU BGEU` execute as `BEQ`.
-- All of `LB LH LBU LHU` execute as `LW`; `SB SH` execute as `SW`.
-
-On the specific items asked about:
-
-- **JALR LSB clear** — not applicable; `JALR` is not implemented. There is no
-  `& ~32'b1` or equivalent anywhere in the source. Opcode `1100111` falls to the
-  `default` NOP.
-- **AUIPC** — not implemented. Opcode `0010111` falls to the `default` NOP.
-  `id_ex_pc` is piped to EX (riscv_top.v:181) and would be available, but nothing
-  uses it for an AUIPC path.
-- **LB/LH sign-extension vs LBU/LHU** — no sub-word memory access exists at all.
-  `data_mem` is word-only: writes `memory[addr[11:2]]` (data_mem.v:14), reads the
-  same (data_mem.v:18). There is no byte enable, no `funct3` input to the memory,
-  and no sign/zero-extension logic on the load path. `id_ex_funct3` is piped as
-  far as EX (riscv_top.v:189) and then dropped — it never reaches MEM or WB.
-- **SLT vs SLTU** — neither implemented. Note the commented-out draft at alu.v:20
-  uses `(a < b)`, which on Verilog `[31:0]` operands is an **unsigned** compare —
-  that would have been `SLTU` semantics under an `SLT` label. If that line is ever
-  revived it needs `$signed(a) < $signed(b)` for `SLT`.
-- **Shift-amount masking** — no shifts implemented. The commented-out draft at
-  alu.v:21–22 does mask correctly with `b[4:0]`, but implements only `SLL`/`SRL`;
-  there is no `SRA` (which needs `$signed(a) >>> b[4:0]`).
-
-The ALU physically supports four operations (alu.v:10–24). Six more are present
-but commented out (alu.v:17–22).
+| `README.md` | Public-facing overview |
+| `COVERAGE.md` | Opcode and hazard coverage matrices, mutation-test results |
+| `errors_fixed.md` | Log of every bug fixed: evidence before, change, evidence after |
+| `next_steps.md` | Phased Basys 3 roadmap (Phase 0 LED blink → Phase 5 ILA bring-up) |
 
 ---
 
-## Module Hierarchy
+## Session goal (current)
+
+The owner knows computer architecture and is here to learn **Verilog and RTL
+design practice**, then take the core to a **Basys 3**. Work in this order:
+
+1. Understand the code and the concepts behind each construct.
+2. Implement the RTL cleanups in "Planned changes" below, one at a time, with
+   the test suite green after each.
+3. Build intuition for RTL from the basics — explain *what hardware* each
+   construct infers, not just what it does in simulation.
+4. Wire it to the board, following `next_steps.md`.
+
+Teaching over doing: explain the why, prefer small reviewable changes, and let
+the owner drive where they want to.
+
+---
+
+## Status at a glance
+
+| | |
+|---|---|
+| ISA | 38 / 40 RV32I. Missing: `ECALL`, `EBREAK` (decode to silent NOP). `FENCE` is a NOP, which is legal here. |
+| Tests | 15 self-checking tests, all passing (`bash tests/run_tests.sh`) |
+| Hazards | Forwarding (EX/MEM, MEM/WB), write-first regfile, load-use stall, 2-deep flush |
+| FPGA | **Not synthesizable to anything useful yet** — no output ports, async memories (Known Issues #1–#3) |
+| Language | Plain Verilog-2001. No SystemVerilog constructs anywhere. |
+
+---
+
+## Module hierarchy
 
 ```
-riscv_top                 src/riscv_top.v        (all 4 pipeline regs, fwd unit,
-  |                                               hazard unit, imm-gen, ALU-ctrl,
-  |                                               WB mux — all inline)
+riscv_top                 src/riscv_top.v   (pipeline regs, imm-gen, ALU decode,
+  |                                          forwarding, hazard, branch compare,
+  |                                          load/store lane logic, WB mux — all inline)
   +-- pc               my_pc       src/pc.v
-  +-- instruction_mem  my_imem     src/instruction_mem.v
+  +-- instruction_mem  my_imem     src/instruction_mem.v   (param PROGRAM)
   +-- control_unit     my_cu       src/control_unit.v
-  +-- reg_file         my_regfile  src/register_file.v   (module is reg_file,
-  |                                                       file is register_file.v)
+  +-- reg_file         my_regfile  src/register_file.v     (module/file names differ)
   +-- alu              my_alu      src/alu.v
   +-- data_mem         my_dmem     src/data_mem.v
 ```
 
-Everything not in that list — forwarding unit, hazard-detection unit, immediate
-generator, ALU control decoder, writeback mux, branch logic — lives inline in
-`riscv_top.v`, not as separate modules. The README's stage table implies more
-modularity than exists.
+`riscv_top` takes a `PROGRAM` parameter (default `"sample_program.hex"`) that is
+passed to `instruction_mem`. Each test overrides it.
 
-Testbench-to-DUT map:
+### Where things live in `src/riscv_top.v`
 
-```
-test/top_tb.v            -> riscv_top          (integration; module riscv_top_tb)
-test/alu_tb.v            -> alu
-test/pc_tb.v             -> pc
-test/register_file_tb.v  -> reg_file
-test/fetch_stage_tb.v    -> pc + instruction_mem
-test/logic_test_tb.v     -> control_unit + data_mem
-```
-
----
-
-## File Map
-
-| Path | Role |
+| Logic | Lines (approx.) |
 |---|---|
-| `src/riscv_top.v` | Top level. Pipeline registers, forwarding, hazards, imm-gen. 314 lines; the bulk of the design. |
-| `src/pc.v` | Program counter register. Sync reset. |
-| `src/instruction_mem.v` | 1024x32 ROM, `$readmemh` init, **combinational read**. |
-| `src/data_mem.v` | 1024x32 RAM, sync write, **combinational gated read**. 4 KB. |
-| `src/register_file.v` | 32x32 regfile. Module name is `reg_file`. Comb read, sync write, **no write-first bypass**. |
-| `src/alu.v` | 4 ops live (ADD/SUB/AND/OR), 6 commented out. |
-| `src/control_unit.v` | Opcode-only decoder. Ignores `funct3`/`funct7` entirely. |
-| `test/top_tb.v` | Integration test — the one that matters. Self-checking, 4 assertions. |
-| `test/{alu,pc,register_file,fetch_stage,logic_test}_tb.v` | Unit testbenches. Mostly `$display` plus waveform rather than self-checking. |
-| `sample_program.hex` | 5-instruction BEQ/hazard program. Read by `instruction_mem` via a **relative** path. |
-| `docs/riscvdatapath.png`, `docs/gtkwave.png` | README figures. |
-| `_attic/` | Quarantined during this audit. Not deleted. See below. |
-| `.gitignore`, `.gitattributes` | Added by this audit. |
-
-### `sample_program.hex`, decoded
-
-```
-addr  word      instruction              note
-0x00  00500093  ADDI x1, x0, 5
-0x04  00500113  ADDI x2, x0, 5
-0x08  00208463  BEQ  x1, x2, +8          -> target 0x10; taken (5 == 5)
-0x0C  06300193  ADDI x3, x0, 99          -> must be flushed
-0x10  02A00213  ADDI x4, x0, 42
-```
-
-Expected: `x1=5, x2=5, x3=0, x4=42`. This matches the README and matches
-`test/top_tb.v:26–44`. Words 5..1023 of IMEM are never initialized, so once the
-PC runs past `0x10` the fetched instruction is `32'bx`. That is benign here:
-`control_unit` assigns all-zero defaults before its `case` (control_unit.v:13–19),
-so an X opcode yields `reg_write = 0` and cannot corrupt architectural state.
-
-### `_attic/` contents
-
-Moved, not deleted, because they fall outside the delete whitelist:
-
-- `_attic/riscv_sim`, `_attic/sim/{alu,fetch,logic,pc,reg,riscv}_sim` — compiled
-  vvp images. Each begins `#!/opt/local/bin/vvp`, a MacPorts path that does not
-  exist on this machine. They were tracked in git. Pure build output; safe to
-  delete permanently.
-- `_attic/test/riscv_top_tb.v` — a 0-byte file. The real integration testbench is
-  `test/top_tb.v`, which confusingly declares `module riscv_top_tb`. The empty
-  file was an orphan and shadowed nothing.
+| Branch comparator (`funct3` → `branch_cond`) | 92–101 |
+| `branch_taken`, `jump_taken`, `redirect` / `flush` | 103–107 |
+| PC next / load-use `stall` / PC mux | 109–119 |
+| IF/ID register (flush clears, stall holds) | 134–143 |
+| Immediate generation (I/S/B/U/J, priority `?:` chain) | 145–158 |
+| ID/EX register (stall or flush → bubble) | 188–230 |
+| ALU control decode (`alu_op` + `funct3`/`funct7`) | 233–266 |
+| Forwarding unit | 270–287 |
+| Operand muxes, branch/jump targets (JALR LSB clear) | 291–311 |
+| EX/MEM register | 322–345 |
+| Store byte-lane select (SB/SH replicate + byte enable) | 349–364 |
+| Sub-word load extract and sign/zero extend | 379–390 |
+| MEM/WB register, WB mux | 393–409 |
 
 ---
 
-## Build & Simulation Flow
+## Architecture as implemented
 
-The only entry point is the README's command block. There is **no Makefile, no
-shell script, and no TCL** in this repo — nothing automates the build.
+**Pipeline.** IF → ID → EX → MEM → WB, four clocked pipeline registers, all
+`always @(posedge clk)` with synchronous reset. Signal names carry their stage
+prefix (`id_ex_*`, `ex_mem_*`, …).
+
+**Harvard.** `instruction_mem` and `data_mem` are separate arrays with separate
+ports; IF and MEM never contend. IMEM is read-only (no write port, no clock),
+initialized by `$readmemh(PROGRAM, …)`.
+
+**Control.** `control_unit` decodes the **opcode only**, emitting `reg_write`,
+`alu_src`, `mem_read`, `mem_write`, `mem_to_reg`, `branch`, `jump`, `jalr`,
+`alu_op[1:0]`, `alu_a_src[1:0]`. It assigns defaults before its `case`, so it
+infers no latches. The final 4-bit ALU operation is decoded **again** in EX from
+`id_ex_alu_op` + `id_ex_funct3` + `id_ex_funct7[5]` — decode is split across two
+stages (Planned change C).
+
+`alu_op`: `00` add (loads/stores/LUI/AUIPC), `01` sub, `10` R-type decode,
+`11` I-type decode. `alu_a_src`: `00` forwarded rs1, `01` PC (AUIPC, JAL/JALR
+link), `10` zero (LUI).
+
+**ALU.** 10 ops on a 4-bit code: ADD SUB AND OR XOR SLL SRL SRA SLT SLTU.
+Shift amounts are masked to `b[4:0]`; SRA and SLT use `$signed`. The `zero`
+output is no longer connected.
+
+**Branches and jumps.** Resolved in EX. `branch_cond` compares the *forwarded*
+operands by `funct3` (BEQ/BNE/BLT/BGE/BLTU/BGEU) with a dedicated comparator,
+not the ALU. Jumps redirect unconditionally in EX. Link value `PC + 4` goes
+through the ALU (`a = PC`, `b = 4`), so WB needs no extra mux. JALR target is
+`(rs1 + imm) & ~1`. On redirect, IF/ID and ID/EX are cleared: 2-cycle penalty,
+no prediction.
+
+**Forwarding.** EX/MEM (priority) then MEM/WB, into both EX operands. Store
+data is forwarded too (`ex_mem_reg_data2 <= ex_alu_b_reg`). JALR's target uses
+the forwarded rs1 (`ex_fwd_rs1`).
+
+**Register file.** Combinational read, `posedge` write, with a **write-first
+bypass**: a read of the register being written that cycle returns the new
+data. This closes the distance-3 RAW case that forwarding cannot reach. x0
+reads as zero and ignores writes. All 32 registers reset to zero in a `for`
+loop.
+
+**Load-use stall.** If the EX instruction is a load whose `rd` matches ID's
+`rs1` or `rs2`, freeze the PC, hold IF/ID, and bubble ID/EX. One cycle.
+
+**Stall/flush priority.** IF/ID: flush beats stall. ID/EX: either clears. PC:
+stall beats redirect — currently unreachable, since `stall` needs a load in EX
+and `redirect` needs a branch/jump in EX.
+
+**Memory access.** `data_mem` is 1024×32 (4 KB), word-indexed by `addr[11:2]`,
+with a 4-bit byte-enable write. Stores replicate data across lanes
+(`{4{byte}}`, `{2{half}}`) and the byte enable picks the lane, so the memory
+has no shifter. Loads read the full word; `ex_mem_funct3` and `addr[1:0]`
+select and extend the byte/halfword **in MEM**, before the MEM/WB register.
+
+---
+
+## Build & test
+
+The whole suite, from the repo root, in **Git Bash**:
 
 ```bash
-iverilog -o riscv_sim src/*.v test/top_tb.v
-vvp riscv_sim
-gtkwave riscv_processor.vcd     # optional
+bash tests/run_tests.sh          # all 15
+bash tests/run_tests.sh loads    # name filter
 ```
 
-Two unstated preconditions:
+It assembles every `tests/progs/*.s` with `tests/asm.pl` (a small Perl RV32I
+assembler), compiles each `tests/tb/*_tb.v` against `src/*.v`, runs it, and
+tallies the results. It also runs the original `test/top_tb.v` as a regression.
+Build output goes to `tests/build/` (gitignored, as are generated `.hex` files).
 
-1. It must be run **from the repo root**. `instruction_mem.v:9` calls
-   `$readmemh("sample_program.hex", memory)` with a relative path, resolved
-   against the simulator's working directory, not the source file's location.
-   Run it from anywhere else and IMEM silently fills with X.
-2. Compile `test/top_tb.v` specifically, **not** `test/*.v`. The unit testbenches
-   each carry their own `initial` block and `$dumpfile`; globbing them together
-   gives multiple top-level modules racing on one VCD.
+**Adding a test.** Write `tests/progs/<name>.s`, then
+`tests/tb/<name>_tb.v` instantiating
+`riscv_top #(.PROGRAM("tests/progs/<name>.hex"))` and using `chk(...)` /
+`finish_test(...)` from `tests/tb/checker.vh`. Testbenches peek at
+`dut.my_regfile.registers[n]` hierarchically, so **renaming the `my_regfile`
+instance or the `registers` array breaks every test**.
 
-Unit testbenches follow the same pattern, e.g.
-`iverilog -o alu_sim src/alu.v test/alu_tb.v && vvp alu_sim`.
+Preconditions that are easy to forget:
 
-**Actual output of the integration test** (run on this machine, Icarus Verilog
-12.0, exit 0):
+- **Run from the repo root.** `$readmemh` paths resolve against the
+  simulator's working directory. Run from anywhere else and IMEM silently
+  fills with X.
+- **Don't glob `test/*.v`.** The legacy unit testbenches in `test/` each have
+  their own `initial` and `$dumpfile`. Compile one at a time, e.g.
+  `iverilog -o alu_sim src/alu.v test/alu_tb.v && vvp alu_sim`. Most of them
+  `$display` rather than self-check.
+- **PowerShell doesn't expand `src\*.v`** for native executables. Use Git Bash,
+  or `(Get-ChildItem src\*.v).FullName`.
+- The `$readmemh ... Not enough words` warning is benign (short program in a
+  1024-word array); the runner filters it out.
 
-```
-WARNING: src/instruction_mem.v:9: $readmemh(sample_program.hex): Not enough
-         words in the file for the requested range [0:1023].
-VCD info: dumpfile riscv_processor.vcd opened for output.
-PASS: BEQ skipped the ADDI to x3 and executed the ADDI to x4.
-test/top_tb.v:47: $finish called at 215000 (1ps)
-```
-
-**The test passes.** The `$readmemh` warning is expected and benign — the
-program is 5 words and the array is 1024 deep (Known Issues #10).
-
-The mechanism, confirmed against the waveform: at cycle 5 the BEQ is in EX with
-`x1` forwarded from MEM/WB (`forward_a = 2'b01`) and `x2` from EX/MEM
-(`forward_b = 2'b10`); the ALU computes `5 - 5 = 0`; `ex_zero` asserts; flush
-zeroes IF/ID and ID/EX, killing the `ADDI x3` in ID and the `ADDI x4` in IF; the
-PC redirects to `0x10` and re-fetches `ADDI x4`. `x3` is never written, `x4`
-becomes 42. The test should pass.
-
-Note what that test does *not* cover: it exercises only distance-1 and
-distance-2 forwarding. It never constructs a distance-3 dependency, which is
-exactly why Known Issues #1 has survived undetected.
+Waveforms: `gtkwave riscv_processor.vcd` after running `test/top_tb.v`.
 
 ---
 
-## Toolchain Notes (WSL2 vs Windows)
+## Toolchain
 
-State of this machine after the audit:
+| Tool | Where |
+|---|---|
+| Icarus Verilog 12.0 (`iverilog`, `vvp`) | `C:\iverilog\bin` (on user PATH) |
+| GTKWave | `C:\iverilog\gtkwave\bin` (on user PATH) |
+| Perl (for `asm.pl`) | ships with Git Bash |
+| Vivado | **not installed** — needed for the board phase |
+| WSL2 | present, but has no tools installed; not needed |
 
-| Tool | Windows | WSL2 (Ubuntu) |
-|---|---|---|
-| `iverilog` | **12.0, installed** — `C:\iverilog\bin\iverilog.exe` | absent |
-| `vvp` | **12.0, installed** — `C:\iverilog\bin\vvp.exe` | absent |
-| `gtkwave` | **installed** — `C:\iverilog\gtkwave\bin\gtkwave.exe` | absent |
-| `make` | absent | not checked |
-| Vivado | absent | absent |
+Git: `core.autocrlf=true`, `.gitattributes` normalizes to LF,
+`core.filemode=false`, and the identity is set repo-locally. Commit message
+style: plain subjects, no filename prefix.
 
-Installed during the audit with:
+The repo sits inside OneDrive. Sync can race with simulator output and git
+index writes; consider moving it to a local path.
 
-```powershell
-winget install --id Icarus.Verilog --source winget `
-  --accept-source-agreements --accept-package-agreements --silent
-```
-
-That pulls `iverilog-v12-20220611-x64_setup.exe` from bleyer.org, which bundles
-GTKWave. **The silent install does not touch PATH** — `C:\iverilog\bin` and
-`C:\iverilog\gtkwave\bin` were appended to the *user* PATH manually (no admin
-required). A new shell is needed to pick that up.
-
-Note for reproducing the earlier state: `winget` without
-`--accept-source-agreements` blocks on an interactive `msstore` prompt, and
-WSL2's `sudo` needs an interactive password — which is why neither worked
-unattended before you asked.
-
-Recommended, in order of least friction:
-
-1. **Native Windows — the right default for this repo.** Install Icarus Verilog
-   for Windows; it bundles GTKWave. There is no reason to reach for a Unix
-   environment here: this project has no Makefile, no shell script, and no TCL
-   (Known Issues #15). The whole build is three `iverilog`/`vvp` invocations, and
-   nothing in it is POSIX-specific. Native also keeps the repo on its own
-   filesystem and gives you a native GTKWave with no display bridge.
-
-   One wrinkle: **PowerShell does not expand wildcards for native executables.**
-   It hands `src\*.v` to the process literally (verified on this machine). Two
-   ways around it:
-
-   ```powershell
-   # PowerShell — expand the glob yourself
-   iverilog -o riscv_sim (Get-ChildItem src\*.v).FullName test\top_tb.v
-   vvp riscv_sim
-   ```
-
-   ```bash
-   # Git Bash (already installed here) — the README command works verbatim
-   iverilog -o riscv_sim src/*.v test/top_tb.v
-   vvp riscv_sim
-   ```
-
-   `cmd.exe` expands nothing either; don't use it. Either way, run from the repo
-   root — see the `$readmemh` note in Build & Simulation Flow.
-
-2. **WSL2** — `sudo apt update && sudo apt install iverilog gtkwave`. A
-   reasonable choice if you already live in WSL, but it is *not* the lower-friction
-   option for this repo, and the "closer to the original macOS setup" argument
-   does not survive contact with the facts: there is no POSIX build tooling here
-   to be compatible with. Real costs: the repo sits on `C:\` under OneDrive, so
-   reaching it at `/mnt/c/Users/akull/OneDrive/Desktop/riscv_processor` crosses
-   the 9p filesystem bridge and is slow; cloning into the WSL filesystem fixes
-   the speed but leaves you maintaining two copies; and GTKWave needs WSLg.
-
-3. **Vivado** — required only if the FPGA target is pursued. Read Known Issues
-   #6, #7, #8 first; the design will not usefully synthesize as written.
-
-Line endings: `core.autocrlf=true` is set on this checkout. The new
-`.gitattributes` normalizes to LF going forward. Existing files were
-deliberately **not** renormalized, so the working tree still holds whatever it
-held before.
-
-`core.filemode` was set to `false` on this repo during the audit. Seven files
-were showing as modified purely because the executable bit could not be
-preserved on the NTFS/OneDrive checkout — a macOS-to-Windows porting artifact
-with zero content change. Git identity (`user.name`/`user.email`) was also set
-**repo-locally** to match prior commits; this machine had none configured
-globally.
-
-**OneDrive:** this repo lives inside a synced OneDrive folder. Sync can race
-with simulator output and git index writes. Worth moving to a local path.
+`_attic/` holds stale macOS vvp binaries and an empty `riscv_top_tb.v`. It's
+build junk kept out of caution and safe to delete.
 
 ---
 
-## Known Issues
+## Planned changes (learning exercises, in suggested order)
 
-Ordered by severity. Tags: **[correctness bug]**, **[FPGA synthesis risk]**,
-**[repo hygiene]**.
+Each one should leave `bash tests/run_tests.sh` at 15/15.
 
-1. **[correctness bug] A RAW dependency at distance 3 reads a stale register.**
-   `register_file.v:15–16` read the array combinationally; `register_file.v:24–26`
-   write on `posedge clk`. There is no write-first transparency and no internal
-   bypass. Forwarding (`riscv_top.v:222–235`) covers only distance 1 (EX/MEM) and
-   distance 2 (MEM/WB). At distance 3 the producer has already left MEM/WB when
-   the consumer reaches EX, and the consumer's ID-stage read happened one cycle
-   *before* the write landed. Concretely: `ADDI x1,x0,5` followed by three
-   instructions, the fourth reading `x1`, gets the old `x1`. The classic 5-stage
-   design closes this with a write-in-first-half / read-in-second-half register
-   file; this one does not. The README's claim of "hardware to correctly handle
-   all data and control hazards" is false. Fix is either a negedge write, or a
-   bypass mux in `reg_file` when
-   `rg_write_en && rg_des_addr == rg_srN_addr && rg_des_addr != 0`.
+- **A. Extract inline logic into modules.** Pull `forwarding_unit`,
+  `hazard_unit`, `imm_gen`, and `alu_decoder` out of `riscv_top.v` so the top
+  level becomes wiring. Each gets a self-checking unit test.
+- **B. Immediate generator as a `case`.** Replace the `?:` priority chain with
+  `case (opcode)`. The cases are mutually exclusive, so the intent is a
+  parallel mux, not a priority encoder.
+- **C. Single-stage decode.** Have `control_unit` take `funct3`/`funct7` and
+  emit the 4-bit `alu_control` directly. This removes `id_ex_alu_op` and
+  `id_ex_funct7` from the ID/EX register.
+- **D. Precise load-use stall.** Only compare `id_rs2` when the ID instruction
+  actually reads rs2 (R, S, B), and `id_rs1` when it reads rs1 (not
+  LUI/AUIPC/JAL). Today the comparison is spurious for I/U/J-type instructions,
+  which costs cycles but never gives a wrong answer.
+- **E. Illegal-instruction signal.** Flag unknown opcodes, plus ECALL/EBREAK,
+  instead of running them as silent NOPs. Optionally implement ECALL/EBREAK as
+  a halt, which also gives the core a defined stop condition.
+- **F. Hygiene.** Rename `register_file.v` → `reg_file.v` (or the module), pick
+  one array declaration direction, slice IMEM with `addr[11:2]` like DMEM
+  does, and drop the unused ALU `zero` port.
+- **G. Register file without reset** (so it can infer LUTRAM). Do this as part
+  of the FPGA work; see Known Issue #4.
 
-   **Reproduced on this machine.** Program: `ADDI x1,x0,5` / `NOP` / `NOP` /
-   `ADD x5,x1,x0` (distance 3) / `ADD x6,x1,x0` (distance 4, control). Result:
+---
 
-   ```
-   x1 = 5   producer wrote correctly
-   x5 = 0   <-- distance-3 consumer read a STALE x1
-   x6 = 5   distance-4 consumer read the correct value
-   ```
+## Known issues
 
-   Wrong answer, no warning, no X. Note the repo's own `test/top_tb.v` cannot
-   catch this: it only ever builds distance-1 and distance-2 dependencies.
+Tags: **[FPGA blocker]**, **[latent]**, **[hygiene]**.
 
-2. **[correctness bug] Every I-type ALU instruction executes as `ADDI`.**
-   `control_unit.v:26–30` matches opcode `0010011` and hardcodes
-   `alu_op = 2'b00` ("force add"), never inspecting `funct3`. `ANDI`, `ORI`,
-   `XORI`, `SLTI`, `SLTIU`, `SLLI`, `SRLI`, `SRAI` therefore all perform an
-   addition. No error, no trap — wrong results, silently.
+1. **[FPGA blocker] No output ports.** `riscv_top` has only `clk` and `rst`, so
+   synthesis will optimize the entire CPU away. Needs observable I/O (LEDs,
+   seven-segment, UART via memory-mapped I/O) and an `.xdc`. See
+   `next_steps.md` Phases 0, 1, and 4.
+2. **[FPGA blocker] IMEM reads combinationally** (`instruction_mem.v`, the
+   `assign`), and the module has no clock, so it can't infer BRAM. Making it
+   synchronous changes the IF stage: the BRAM output register becomes IF/ID,
+   so flush/stall must drive the BRAM's enable/reset or a kill-mux. See
+   `next_steps.md` Phase 2.
+3. **[FPGA blocker] DMEM reads combinationally and through a gate** —
+   `assign read_data = mem_read ? memory[addr[11:2]] : 0`. Both the async read
+   and the output mux defeat BRAM inference. When it becomes synchronous, the
+   load-extract logic (riscv_top.v ~379–390) must move from MEM to WB, and
+   `funct3` + `addr[1:0]` must be added to MEM/WB.
+4. **[FPGA cost] Register-file reset forces flip-flops.** The `for`-loop reset
+   puts 1024 bits in FFs rather than LUTRAM. Acceptable on an XC7A35T, but
+   your reset strategy is choosing the memory primitive.
+5. **[FPGA timing] Long branch-resolve path.** Forwarding mux → 32-bit
+   comparator → target adder → PC mux → PC, plus the async IMEM read feeding
+   IF/ID. Expect a modest Fmax; plan on a divided clock first.
+6. **[latent] ECALL/EBREAK/unknown opcodes run as silent NOPs**
+   (`control_unit.v` empty `default`). See Planned change E.
+7. **[latent] No halt; fetch runs past the program.** Uninitialized IMEM words
+   are X in simulation. These are harmless only because the decoder's defaults
+   keep `reg_write = 0`. On hardware the core will run whatever the BRAM
+   initializes to. Tests stop on a fixed `#delay`.
+8. **[latent] Spurious load-use stalls.** The stall checks `rs1`/`rs2` fields
+   for every format. See Planned change D.
+9. **[latent] Stall outranks redirect in the PC mux** (`riscv_top.v:119`).
+   Unreachable today. It becomes live if anything ever makes a load and a
+   redirect coincide in EX.
+10. **[hygiene] Monolithic top level, split decode, naming mismatches.** See
+    Planned changes A, C, F. Also, MEM/WB carries both the ALU result and the
+    load data plus a select (65 bits) where one resolved 32-bit value would do.
+11. **[hygiene] `$readmemh` uses a relative path.** It depends on the working
+    directory in simulation. For Vivado, the `.hex` must be added to the
+    project as a design source.
 
-   **Reproduced on this machine.** With `x1 = 5`, the instruction
-   `ANDI x7, x1, 3` (`0x0030F393`) yielded `x7 = 8`. Correct `ANDI` is
-   `5 & 3 = 1`; `8` is `5 + 3`, i.e. an `ADDI`.
-
-3. **[correctness bug] Every conditional branch executes as `BEQ`.**
-   `control_unit.v:48–56` keys on opcode `1100011` alone and always sets
-   `alu_op = 2'b01` (subtract); `riscv_top.v:86` then tests only `ex_zero`.
-   `funct3` is piped to EX (`riscv_top.v:189`) and ignored. `BNE` is therefore
-   **inverted** — it branches exactly when it must not. `BLT`, `BGE`, `BLTU`,
-   `BGEU` are equally wrong, and the ALU has no comparison operation to build
-   them from anyway.
-
-   **Reproduced on this machine.** Program: `ADDI x1,x0,5` / `ADDI x2,x0,7` /
-   `BNE x1,x2,+8` (`0x00209463`) / `ADDI x3,x0,99` / `ADDI x4,x0,42`. Since
-   `5 != 7` the branch must be taken and `x3` must stay 0. Result: **`x3 = 99`** —
-   the branch was not taken. `BNE` behaves as `BEQ`, confirming the inversion.
-
-4. **[correctness bug] All load and store widths execute as word.**
-   `control_unit.v:31–47` ignores `funct3` for both opcodes, and `data_mem` is
-   word-only (`data_mem.v:14` and `:18`, both indexing `memory[addr[11:2]]`).
-   There is no byte enable, no `funct3` port on the memory, and no
-   sign/zero-extension on the load path — `id_ex_funct3` is dropped after EX and
-   never reaches MEM or WB. `LB`, `LH`, `LBU`, `LHU`, `SB`, `SH` all move a full
-   word, unaware of alignment. The LB/LH-versus-LBU/LHU distinction does not
-   exist to be gotten wrong.
-
-5. **[correctness bug] Unimplemented opcodes decode to a silent NOP.**
-   `control_unit.v:59–61` is an empty `default`, so unknown opcodes inherit the
-   all-zero defaults from `control_unit.v:13–19` — `reg_write = 0`, no trap, no
-   flag. `LUI`, `AUIPC`, `JAL`, `JALR`, `FENCE`, `ECALL`, `EBREAK` and the R-type
-   `SLT/SLTU/XOR/SLL/SRL/SRA` all vanish. A program using them produces wrong
-   answers rather than an obvious failure. For a teaching core, an
-   `illegal_instruction` output would be worth more than the silence.
-
-6. **[FPGA synthesis risk] Instruction memory is combinational-read; will not
-   infer BRAM.** `instruction_mem.v:12` is a continuous assign, and the module
-   has no clock port at all (`instruction_mem.v:1–4`). Vivado cannot map a
-   combinational read into a Block RAM — it will build 1024x32 of distributed
-   LUT ROM plus a large output mux. Wasteful on an XC7A35T and a likely critical
-   path. BRAM inference needs the read registered.
-
-7. **[FPGA synthesis risk] Data memory read is both combinational and gated;
-   will not infer BRAM.** `data_mem.v:18` —
-   `assign read_data = (mem_read) ? memory[addr[11:2]] : 32'b0`. Two separate
-   blockers: the read is unclocked, and the `mem_read` mux on the memory output
-   defeats the inference pattern outright. Result is 32 Kbit of distributed
-   LUTRAM, consuming a large fraction of the SLICEM resources on a 35T. Note the
-   write side (`data_mem.v:12–16`) *is* synchronous, so this is a mixed-style
-   memory — the worst case for inference.
-
-8. **[FPGA synthesis risk] The design cannot be put on a board as it stands.**
-   `riscv_top` has no ports except `clk` and `rst` (`riscv_top.v:1–4`) — no
-   outputs whatsoever. Synthesis will find nothing observable and optimize the
-   entire pipeline away to nothing. There is also no `.xdc` in the repo, so no
-   pin or clock constraints exist. Reaching a Basys 3 needs, at minimum: some
-   output port (LEDs, seven-segment, UART), a constraints file, and a clocking
-   plan. None of this is started.
-
-9. **[FPGA synthesis risk] `$readmemh` with a bare relative path.**
-   `instruction_mem.v:9` — `$readmemh("sample_program.hex", memory)`. In
-   simulation this silently depends on the working directory; run `vvp` from
-   anywhere but the repo root and instruction memory fills with X and the
-   processor executes garbage with no diagnostic. For Vivado synthesis the file
-   must be added to the project and the path made resolvable at elaboration.
-
-10. **[correctness bug] Instruction fetch has no bounds check and runs off the
-    end of the program.** `instruction_mem.v:12` indexes `memory[addr >> 2]` into
-    a `[0:1023]` array with no range guard, and only 5 words are ever
-    initialized. Past `0x10` the core fetches X forever. It happens to be
-    harmless today — `control_unit`'s pre-assigned defaults keep `reg_write` at
-    0 — but it is harmless by luck, not design, and it means the core has no
-    defined halt condition. The testbench relies on `$finish` after a fixed
-    `#200` (`test/top_tb.v:24`).
-
-11. **[correctness bug, latent] Load-use detection ignores whether the ID-stage
-    instruction actually reads `rs2`.** `riscv_top.v:94–96` compares `id_ex_rd`
-    against both `id_rs1` and `id_rs2` unconditionally. For `ADDI` and `LW`,
-    instruction bits `[24:20]` are immediate bits, not a register specifier — if
-    they happen to match the destination of a load in EX, the pipeline stalls for
-    no reason. This costs a cycle and never produces a wrong answer, so it is a
-    performance wart rather than a live bug, but the condition is stated
-    incorrectly and should be qualified by the ID instruction's format.
-
-12. **[repo hygiene] ~~Dead pipeline registers left over from a
-    later-branch-resolution design.~~ RESOLVED on branch `fix-and-cover`.**
-    `ex_mem_branch_target`, `ex_mem_zero`, `ex_mem_branch`, `ex_mem_pc_plus4`,
-    `id_ex_pc_plus4`, `if_id_pc_plus4` and the `ex_zero` wire were all latched
-    or driven and **never read** — roughly 130 flops. Two separate causes: a
-    three-stage-long `pc_plus4` chain that never gained a consumer, and the
-    leftovers of a design that resolved branches in MEM before resolution moved
-    to EX. Deleted; the 15-test suite passes unchanged.
-
-    Still standing: `id_ex_funct7` (7 bits) is piped to EX and read only for
-    bit 5, because ALU decode happens in two places — `control_unit` emits
-    `alu_op` in ID and the final `alu_control` is derived again in EX. Folding
-    that into `control_unit` would remove the field entirely. Also
-    unaddressed: MEM/WB carries `mem_wb_alu_result`, `mem_wb_read_data` **and**
-    `mem_wb_mem_to_reg`, where resolving the writeback mux one stage earlier
-    would pipe a single 32-bit result instead of 65 bits.
-
-13. **[repo hygiene] The one integration test passes, and that is misleading.**
-    `test/top_tb.v` runs green (`PASS`, exit 0) on Icarus Verilog 12.0. It is the
-    *only* self-checking test in the repo, it asserts on four registers, and it
-    exercises exactly one code path: a taken `BEQ` with distance-1 and distance-2
-    forwarding. It cannot fail on Known Issues #1, #2, #3, #4, or #5 — all of
-    which are live, silent, wrong-answer bugs, and three of which were reproduced
-    on this machine in a few lines of hex. A green suite here means almost
-    nothing. The unit testbenches
-    (`test/{alu,pc,register_file,fetch_stage,logic_test}_tb.v`) mostly `$display`
-    and dump waveforms rather than assert, so they do not close the gap. The
-    highest-value next step for this repo is a directed hazard-and-ISA test
-    program set, not more RTL.
-
-14. **[repo hygiene] Compiled simulator binaries were committed, carrying a
-    hardcoded macOS path.** `riscv_sim` and `sim/*_sim` were tracked in git. Each
-    is a vvp image beginning `#!/opt/local/bin/vvp` — a MacPorts location that
-    does not exist on Windows or on most Linux installs. Even with a toolchain
-    present these would not run. Moved to `_attic/`, not deleted, since they fall
-    outside the delete whitelist. They are pure build output; delete them.
-
-15. **[repo hygiene] No build automation of any kind.** No Makefile, no script,
-    no TCL. The build exists only as three lines of prose in the README, with two
-    unstated preconditions (must run from repo root; must not glob `test/*.v`).
-    A five-line Makefile would remove both footguns.
-
-16. **[repo hygiene] The README overstates what the hardware does.** It claims
-    "hardware to correctly handle all data and control hazards" and a "Forwarding
-    unit ... eliminating most stalls." Known Issues #1 contradicts the first
-    claim outright. The README's instruction list is accurate; the hazard claim
-    is not.
-
-17. **[repo hygiene, latent] Stall outranks branch redirect in the PC mux.**
-    `riscv_top.v:99` — `pc_in_mux = stall ? pc_out : pc_next`. If `stall` and
-    `branch_taken` were ever simultaneously true, the branch target computed at
-    `riscv_top.v:91` would be discarded and the branch lost. Currently
-    unreachable, since `stall` requires `id_ex_mem_read` and `branch_taken`
-    requires `id_ex_branch` and no instruction sets both. It becomes live the
-    moment a load-with-branch or a second branch resolution path is added.
-
-18. **[repo hygiene] Naming inconsistencies that cost a reader time.**
-    `src/register_file.v` declares `module reg_file`. `test/top_tb.v` declares
-    `module riscv_top_tb`, while a separate 0-byte `test/riscv_top_tb.v` also
-    existed (now in `_attic/`). The repo is described as SystemVerilog but is
-    Verilog-2001 throughout.
-
-19. **[repo hygiene] The repo lives inside a synced OneDrive folder.** Sync can
-    interleave with simulator output and git index writes. Move it to a local
-    path.
+Fixed issues (the old #1–#5: distance-3 RAW, I-type running as ADDI, all
+branches running as BEQ, word-only memory, missing LUI/AUIPC/JAL/JALR) are
+documented in `errors_fixed.md`.
