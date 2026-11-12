@@ -6,7 +6,8 @@ module riscv_top_tb();
 
     riscv_top dut (
         .clk(clk),
-        .rst(rst)
+        .rst(rst),
+        .ce(1'b1)
     );
 
     always #5 clk = ~clk;

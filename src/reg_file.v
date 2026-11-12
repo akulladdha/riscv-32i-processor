@@ -8,7 +8,9 @@ module reg_file (
     input  wire [4:0] rg_sr2_addr,// Source 2 register index (0-31)
     input  wire [31:0] rg_des_data,// Data to be written
     output wire [31:0] rg_sr1_data,// Data read from Source 1
-    output wire [31:0] rg_sr2_data// Data read from Source 2
+    output wire [31:0] rg_sr2_data,// Data read from Source 2
+    input  wire [4:0]  dbg_addr,   // Debug read port: observation only
+    output wire [31:0] dbg_data
 );
 //[0:31]: ascending index range, matching the memories
 reg [31:0] registers [0:31];
@@ -25,6 +27,10 @@ assign rg_sr1_data = (rg_sr1_addr == 5'b0) ? 32'b0 :
 assign rg_sr2_data = (rg_sr2_addr == 5'b0) ? 32'b0 :
                      (wr_active && (rg_des_addr == rg_sr2_addr)) ? rg_des_data :
                      registers[rg_sr2_addr];
+
+// Debug port: a third, independent read port (one more 32:1 mux). It reads the
+// array directly, WITHOUT the write-first bypass, so it shows committed state.
+assign dbg_data = (dbg_addr == 5'b0) ? 32'b0 : registers[dbg_addr];
 
 always @(posedge clk) begin
     if(rst) begin

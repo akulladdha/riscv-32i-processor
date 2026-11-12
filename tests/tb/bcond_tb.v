@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 module bcond_tb();
     reg clk, rst;
-    riscv_top #(.PROGRAM("tests/progs/bcond.hex")) dut (.clk(clk), .rst(rst));
+    riscv_top #(.PROGRAM("tests/progs/bcond.hex")) dut (.clk(clk), .rst(rst), .ce(1'b1));
     always #5 clk = ~clk;
     `include "checker.vh"
     initial begin

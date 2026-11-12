@@ -4,6 +4,12 @@ module riscv_top #(
 )(
     input  wire clk,
     input  wire rst,
+    input  wire ce,     //clock enable: the core advances only on cycles where ce=1
+    //debug observation ports: read-only views of architectural state, so a
+    //board wrapper can display the CPU (and so synthesis keeps it)
+    input  wire [4:0]  dbg_reg_sel,
+    output wire [31:0] dbg_reg_data,
+    output wire [31:0] dbg_pc,
     output reg  halted, //sticky: an ECALL/EBREAK or illegal instruction committed
     output reg  error   //sticky: the halt was caused by an illegal instruction
 );
@@ -132,7 +138,7 @@ module riscv_top #(
         if (rst) begin
             halted <= 1'b0;
             error  <= 1'b0;
-        end else if (halt_req && !halted) begin
+        end else if (ce && halt_req && !halted) begin
             halted <= 1'b1;
             error  <= id_ex_illegal;
         end
@@ -154,7 +160,7 @@ module riscv_top #(
     );
 
     //hold PC when stalling or stopped
-    wire [31:0] pc_in_mux = (stall || stop) ? pc_out : pc_next;
+    wire [31:0] pc_in_mux = (!ce || stall || stop) ? pc_out : pc_next;
 
     pc my_pc (
         .clk(clk),
@@ -170,10 +176,10 @@ module riscv_top #(
 
     //IF/ID register: NOP on reset, taken branch, or halt; hold on stall
     always @(posedge clk) begin
-        if (rst || flush || stop) begin
+        if (rst || (ce && (flush || stop))) begin
             if_id_pc       <= 32'b0;
             if_id_instr    <= NOP;
-        end else if (!stall) begin
+        end else if (ce && !stall) begin
             if_id_pc       <= pc_out;
             if_id_instr    <= if_instr;
         end
@@ -216,18 +222,20 @@ module riscv_top #(
     reg_file my_regfile (
         .clk(clk),
         .rst(rst),
-        .rg_write_en(mem_wb_reg_write),
+        .rg_write_en(mem_wb_reg_write && ce), //a write is a state change: gate it
         .rg_des_addr(mem_wb_rd),
         .rg_sr1_addr(id_rs1),
         .rg_sr2_addr(id_rs2),
         .rg_des_data(wb_write_data),
         .rg_sr1_data(id_reg_data1),
-        .rg_sr2_data(id_reg_data2)
+        .rg_sr2_data(id_reg_data2),
+        .dbg_addr(dbg_reg_sel),
+        .dbg_data(dbg_reg_data)
     );
 
     //ID/EX register: inject NOP bubble on stall, flush, or halt
     always @(posedge clk) begin
-        if (rst || stall || flush || stop) begin
+        if (rst || (ce && (stall || flush || stop))) begin
             id_ex_pc         <= 32'b0;
             id_ex_reg_data1  <= 32'b0;
             id_ex_reg_data2  <= 32'b0;
@@ -248,7 +256,7 @@ module riscv_top #(
             id_ex_jalr       <= 1'b0;
             id_ex_halt       <= 1'b0;
             id_ex_illegal    <= 1'b0;
-        end else begin
+        end else if (ce) begin
             id_ex_pc         <= if_id_pc;
             id_ex_reg_data1  <= id_reg_data1;
             id_ex_reg_data2  <= id_reg_data2;
@@ -327,7 +335,7 @@ module riscv_top #(
             ex_mem_mem_write     <= 1'b0;
             ex_mem_mem_to_reg    <= 1'b0;
             ex_mem_funct3        <= 3'b0;
-        end else begin
+        end else if (ce) begin
             ex_mem_alu_result    <= ex_alu_result;
             ex_mem_reg_data2     <= ex_alu_b_reg; //forwarded rs2 for SW
             ex_mem_rd            <= id_ex_rd;
@@ -364,7 +372,7 @@ module riscv_top #(
     data_mem my_dmem (
         .clk(clk),
         .mem_read(ex_mem_mem_read),
-        .mem_write(ex_mem_mem_write),
+        .mem_write(ex_mem_mem_write && ce),
         .byte_en(mem_byte_en),
         .addr(ex_mem_alu_result),
         .write_data(mem_store_data),
@@ -395,7 +403,7 @@ module riscv_top #(
             mem_wb_rd          <= 5'b0;
             mem_wb_reg_write   <= 1'b0;
             mem_wb_mem_to_reg  <= 1'b0;
-        end else begin
+        end else if (ce) begin
             mem_wb_alu_result  <= ex_mem_alu_result;
             mem_wb_read_data   <= mem_load_data;
             mem_wb_rd          <= ex_mem_rd;
@@ -403,6 +411,8 @@ module riscv_top #(
             mem_wb_mem_to_reg  <= ex_mem_mem_to_reg;
         end
     end
+
+    assign dbg_pc = pc_out;
 
     assign wb_write_data = mem_wb_mem_to_reg ? mem_wb_read_data : mem_wb_alu_result;
 
