@@ -213,9 +213,8 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
   `alu_decoder`, `forwarding_unit`, `hazard_unit` extracted. Unit tests live in
   `tests/unit/<module>_tb.v`, compiled against `src/<module>.v` alone; only
   `forwarding_unit` has one so far. Branch comparator could follow.
-- **B. Immediate generator as a `case`.** Replace the `?:` priority chain with
-  `case (opcode)`. The cases are mutually exclusive, so the intent is a
-  parallel mux, not a priority encoder.
+- **B. ~~Immediate generator as a `case`.~~ DONE.** Now `imm_gen.v`, a
+  `case` on named opcodes — exclusive selection, not a priority chain.
 - **C. Single-stage decode.** Have `control_unit` take `funct3`/`funct7` and
   emit the 4-bit `alu_control` directly. This removes `id_ex_alu_op` and
   `id_ex_funct7` from the ID/EX register.
