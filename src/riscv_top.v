@@ -30,6 +30,7 @@ module riscv_top #(
     wire [1:0]  id_alu_a_src;
     wire        id_jump;
     wire        id_jalr;
+    wire        id_uses_rs1, id_uses_rs2;
 
     //ID/EX pipeline register
     reg [31:0] id_ex_pc;
@@ -115,6 +116,8 @@ module riscv_top #(
         .id_ex_rd(id_ex_rd),
         .id_rs1(id_rs1),
         .id_rs2(id_rs2),
+        .id_uses_rs1(id_uses_rs1),
+        .id_uses_rs2(id_uses_rs2),
         .stall(stall)
     );
 
@@ -160,7 +163,9 @@ module riscv_top #(
         .branch(id_branch),
         .alu_a_src(id_alu_a_src),
         .jump(id_jump),
-        .jalr(id_jalr)
+        .jalr(id_jalr),
+        .uses_rs1(id_uses_rs1),
+        .uses_rs2(id_uses_rs2)
     );
 
     //ALU decode happens in ID, in parallel with the register-file read, so

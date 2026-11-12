@@ -9,7 +9,12 @@ module control_unit(
     output reg [1:0] alu_op,
     output reg jump,
     output reg jalr, //target is rs1 + imm rather than pc + imm
-    output reg [1:0] alu_a_src //00=register, 01=PC (AUIPC), 10=zero (LUI)
+    output reg [1:0] alu_a_src, //00=register, 01=PC (AUIPC), 10=zero (LUI)
+    //Which source-register fields are real for this format. The rs1/rs2 bit
+    //positions are fixed in every encoding, but in I/U/J formats they hold
+    //immediate bits, so the hazard unit must not compare them.
+    output reg uses_rs1, //R, I-ALU, load, store, branch, JALR
+    output reg uses_rs2  //R, store, branch
 
 );
 always @(*) begin
@@ -23,18 +28,24 @@ always @(*) begin
     alu_a_src  = 2'b00;
     jump       = 0;
     jalr       = 0;
+    uses_rs1   = 0;
+    uses_rs2   = 0;
     case(opcode)
         7'b0110011: begin //R-type ADD
+            uses_rs1   = 1;
+            uses_rs2   = 1;
             reg_write  = 1;
             alu_src    = 0;
             alu_op     = 2'b10;
         end
         7'b0010011: begin //I-type ALU: ADDI SLTI SLTIU XORI ORI ANDI SLLI SRLI SRAI
+            uses_rs1   = 1;
             reg_write  = 1;
             alu_src    = 1;
             alu_op     = 2'b11; //decode funct3 (and funct7[5] for shifts)
         end
         7'b0000011: begin // Load (LW)
+            uses_rs1   = 1;
             reg_write  = 1;
             mem_read   = 1;
             mem_to_reg = 1; 
@@ -44,6 +55,8 @@ always @(*) begin
         end
 
         7'b0100011: begin // Store (SW)
+            uses_rs1   = 1;
+            uses_rs2   = 1;
             reg_write  = 0;
             mem_write   = 1;
             mem_read = 0;
@@ -52,6 +65,8 @@ always @(*) begin
             alu_op     = 2'b00;
         end
         7'b1100011: begin // BEQ
+            uses_rs1   = 1;
+            uses_rs2   = 1;
             reg_write  = 0;
             alu_src    = 0;
             mem_read   = 0;
@@ -80,6 +95,7 @@ always @(*) begin
             alu_a_src  = 2'b01; //link value is PC + 4
         end
         7'b1100111: begin // JALR: rd = pc+4, PC = (rs1 + imm) with LSB cleared
+            uses_rs1   = 1;
             reg_write  = 1;
             jump       = 1;
             jalr       = 1;

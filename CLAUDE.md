@@ -38,7 +38,7 @@ the owner drive where they want to.
 | | |
 |---|---|
 | ISA | 38 / 40 RV32I. Missing: `ECALL`, `EBREAK` (decode to silent NOP). `FENCE` is a NOP, which is legal here. |
-| Tests | 16 self-checking tests (15 program-level + 1 unit), all passing (`bash tests/run_tests.sh`) |
+| Tests | 17 self-checking tests (16 program-level + 1 unit), all passing (`bash tests/run_tests.sh`) |
 | Hazards | Forwarding (EX/MEM, MEM/WB), write-first regfile, load-use stall, 2-deep flush |
 | FPGA | **Not synthesizable to anything useful yet** — no output ports, async memories (Known Issues #1–#3) |
 | Language | Plain Verilog-2001. No SystemVerilog constructs anywhere. |
@@ -128,8 +128,8 @@ data. This closes the distance-3 RAW case that forwarding cannot reach. x0
 reads as zero and ignores writes. All 32 registers reset to zero in a `for`
 loop.
 
-**Load-use stall.** If the EX instruction is a load whose `rd` matches ID's
-`rs1` or `rs2`, freeze the PC, hold IF/ID, and bubble ID/EX. One cycle.
+**Load-use stall.** If the EX instruction is a load whose `rd` matches a source
+register ID actually reads (`uses_rs1`/`uses_rs2` from `control_unit`), freeze the PC, hold IF/ID, and bubble ID/EX. One cycle.
 
 **Stall/flush priority.** IF/ID: flush beats stall. ID/EX: either clears. PC:
 stall beats redirect — currently unreachable, since `stall` needs a load in EX
@@ -148,7 +148,7 @@ select and extend the byte/halfword **in MEM**, before the MEM/WB register.
 The whole suite, from the repo root, in **Git Bash**:
 
 ```bash
-bash tests/run_tests.sh          # all 16
+bash tests/run_tests.sh          # all 17
 bash tests/run_tests.sh loads    # name filter
 ```
 
@@ -218,10 +218,11 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
 - **C. ~~Single-stage decode.~~ DONE.** `alu_decoder` moved from EX to ID.
   ID/EX lost `alu_op` (2) and `funct7` (7), gained `alu_control` (4): 5 fewer
   flops, and decoder delay is off the EX critical path.
-- **D. Precise load-use stall.** Only compare `id_rs2` when the ID instruction
-  actually reads rs2 (R, S, B), and `id_rs1` when it reads rs1 (not
-  LUI/AUIPC/JAL). Today the comparison is spurious for I/U/J-type instructions,
-  which costs cycles but never gives a wrong answer.
+- **D. ~~Precise load-use stall.~~ DONE.** `control_unit` emits `uses_rs1` /
+  `uses_rs2`; `hazard_unit` only compares real source fields.
+  `tests/progs/stallprec.s` counts stall cycles (3 before, 1 after). The
+  forwarding unit still matches immediate bits, harmlessly: the operand mux
+  discards the forwarded value when `alu_src` selects the immediate.
 - **E. Illegal-instruction signal.** Flag unknown opcodes, plus ECALL/EBREAK,
   instead of running them as silent NOPs. Optionally implement ECALL/EBREAK as
   a halt, which also gives the core a defined stop condition.
@@ -267,8 +268,7 @@ Tags: **[FPGA blocker]**, **[latent]**, **[hygiene]**.
    are X in simulation. These are harmless only because the decoder's defaults
    keep `reg_write = 0`. On hardware the core will run whatever the BRAM
    initializes to. Tests stop on a fixed `#delay`.
-8. **[latent] Spurious load-use stalls.** The stall checks `rs1`/`rs2` fields
-   for every format. See Planned change D.
+8. ~~**[latent] Spurious load-use stalls.**~~ Fixed by Planned change D.
 9. **[latent] Stall outranks redirect in the PC mux** (`riscv_top.v:119`).
    Unreachable today. It becomes live if anything ever makes a load and a
    redirect coincide in EX.
