@@ -5,6 +5,16 @@ module riscv_top #(
     input rst
 );
 
+    //RV32I base opcodes (instr[6:0])
+    localparam OP_LOAD   = 7'b0000011;
+    localparam OP_IMM    = 7'b0010011;
+    localparam OP_AUIPC  = 7'b0010111;
+    localparam OP_STORE  = 7'b0100011;
+    localparam OP_LUI    = 7'b0110111;
+    localparam OP_BRANCH = 7'b1100011;
+    localparam OP_JALR   = 7'b1100111;
+    localparam OP_JAL    = 7'b1101111;
+
     //IF stage wires
     wire [31:0] if_instr;
     wire [31:0] pc_out;
@@ -23,7 +33,7 @@ module riscv_top #(
     wire [6:0]  id_funct7 = if_id_instr[31:25];
 
     wire [31:0] id_reg_data1, id_reg_data2;
-    wire [31:0] id_imm_ext;
+    reg  [31:0] id_imm_ext; //reg because it is assigned in always @(*), still combinational
     wire        id_reg_write, id_alu_src, id_mem_read, id_mem_write, id_mem_to_reg, id_branch;
     wire [1:0]  id_alu_op;
     wire [1:0]  id_alu_a_src;
@@ -149,13 +159,18 @@ module riscv_top #(
     wire [31:0] u_ext = {if_id_instr[31:12], 12'b0};
     wire [31:0] j_ext = {{11{if_id_instr[31]}}, if_id_instr[31], if_id_instr[19:12],
                          if_id_instr[20], if_id_instr[30:21], 1'b0};
-    assign id_imm_ext = (id_opcode == 7'b0000011 || id_opcode == 7'b0010011 ||
-                         id_opcode == 7'b1100111) ? i_ext :
-                        (id_opcode == 7'b0100011) ? s_ext :
-                        (id_opcode == 7'b1100011) ? b_ext :
-                        (id_opcode == 7'b0110111 || id_opcode == 7'b0010111) ? u_ext :
-                        (id_opcode == 7'b1101111) ? j_ext :
-                        32'b0;
+    //opcodes are mutually exclusive, so a case (parallel select) states the
+    //intent; a ?: chain would describe a priority cascade that never matters
+    always @(*) begin
+        case (id_opcode)
+            OP_LOAD, OP_IMM, OP_JALR: id_imm_ext = i_ext;
+            OP_STORE:                 id_imm_ext = s_ext;
+            OP_BRANCH:                id_imm_ext = b_ext;
+            OP_LUI, OP_AUIPC:         id_imm_ext = u_ext;
+            OP_JAL:                   id_imm_ext = j_ext;
+            default:                  id_imm_ext = 32'b0; //R-type has no immediate
+        endcase
+    end
 
     control_unit my_cu (
         .opcode(id_opcode),
