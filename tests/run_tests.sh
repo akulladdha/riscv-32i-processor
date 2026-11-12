@@ -73,6 +73,27 @@ for tb in tests/unit/*_tb.v; do
     fi
 done
 
+# ---- board wrapper: fpga/sim/*_tb.v against the CPU plus fpga/*.v ----
+# fpga/demo.hex is committed (Vivado needs it as a design source), but it is
+# regenerated here so it can never drift from fpga/demo.s.
+perl tests/asm.pl fpga/demo.s fpga/demo.hex >/dev/null || { echo "ASSEMBLE ERROR: fpga/demo.s"; exit 1; }
+for tb in fpga/sim/*_tb.v; do
+    [ -e "$tb" ] || continue
+    name="board_$(basename "$tb" _tb.v)"
+    if [ -n "$FILTER" ]; then case "$name" in *"$FILTER"*) ;; *) continue ;; esac; fi
+    if ! iverilog -I tests/tb -o "$BUILD/$name" src/*.v fpga/*.v "$tb" 2>"$BUILD/$name.log"; then
+        echo "TEST $name: COMPILE FAIL"; sed 's/^/    /' "$BUILD/$name.log"
+        fail=$((fail+1)); failed_names="$failed_names $name"; continue
+    fi
+    out=$(vvp "$BUILD/$name" 2>&1 | grep -v "Not enough words")
+    if echo "$out" | grep -q "PASS$"; then
+        echo "TEST $name: PASS"; pass=$((pass+1))
+    else
+        echo "TEST $name: FAIL"; echo "$out" | grep -E "FAIL|ok " | sed 's/^/    /'
+        fail=$((fail+1)); failed_names="$failed_names $name"
+    fi
+done
+
 run_original
 
 echo "----------------------------------------"
