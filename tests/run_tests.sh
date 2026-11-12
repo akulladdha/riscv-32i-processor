@@ -53,6 +53,26 @@ for tb in tests/tb/*_tb.v; do
     fi
 done
 
+# ---- unit tests: tests/unit/<module>_tb.v is compiled against src/<module>.v
+# alone, so the module is tested in isolation from the rest of the CPU ----
+for tb in tests/unit/*_tb.v; do
+    [ -e "$tb" ] || continue
+    mod=$(basename "$tb" _tb.v)
+    name="unit_$mod"
+    if [ -n "$FILTER" ]; then case "$name" in *"$FILTER"*) ;; *) continue ;; esac; fi
+    if ! iverilog -o "$BUILD/$name" "src/$mod.v" "$tb" 2>"$BUILD/$name.log"; then
+        echo "TEST $name: COMPILE FAIL"; sed 's/^/    /' "$BUILD/$name.log"
+        fail=$((fail+1)); failed_names="$failed_names $name"; continue
+    fi
+    out=$(vvp "$BUILD/$name" 2>&1)
+    if echo "$out" | grep -q "PASS$"; then
+        echo "TEST $name: PASS"; pass=$((pass+1))
+    else
+        echo "TEST $name: FAIL"; echo "$out" | grep FAIL | sed 's/^/    /'
+        fail=$((fail+1)); failed_names="$failed_names $name"
+    fi
+done
+
 run_original
 
 echo "----------------------------------------"

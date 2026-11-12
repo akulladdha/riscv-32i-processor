@@ -5,16 +5,6 @@ module riscv_top #(
     input rst
 );
 
-    //RV32I base opcodes (instr[6:0])
-    localparam OP_LOAD   = 7'b0000011;
-    localparam OP_IMM    = 7'b0010011;
-    localparam OP_AUIPC  = 7'b0010111;
-    localparam OP_STORE  = 7'b0100011;
-    localparam OP_LUI    = 7'b0110111;
-    localparam OP_BRANCH = 7'b1100011;
-    localparam OP_JALR   = 7'b1100111;
-    localparam OP_JAL    = 7'b1101111;
-
     //IF stage wires
     wire [31:0] if_instr;
     wire [31:0] pc_out;
@@ -33,7 +23,7 @@ module riscv_top #(
     wire [6:0]  id_funct7 = if_id_instr[31:25];
 
     wire [31:0] id_reg_data1, id_reg_data2;
-    reg  [31:0] id_imm_ext; //reg because it is assigned in always @(*), still combinational
+    wire [31:0] id_imm_ext; //driven by imm_gen's output port
     wire        id_reg_write, id_alu_src, id_mem_read, id_mem_write, id_mem_to_reg, id_branch;
     wire [1:0]  id_alu_op;
     wire [1:0]  id_alu_a_src;
@@ -62,7 +52,7 @@ module riscv_top #(
     reg        id_ex_jalr;
 
     //EX stage wires
-    reg  [3:0]  ex_alu_control;
+    wire [3:0]  ex_alu_control;
     wire [31:0] ex_alu_a;
     wire [31:0] ex_alu_b_reg;
     wire [31:0] ex_alu_src2;
@@ -120,10 +110,14 @@ module riscv_top #(
     //use ex_branch_target directly — it's valid while BEQ is in EX
     wire [31:0] pc_next = redirect ? ex_jump_target : if_pc_plus4;
 
-    //load-use hazard: stall if LW in EX and dependent instruction in ID
-    wire stall = id_ex_mem_read &&
-                 (id_ex_rd != 5'b0) &&
-                 ((id_ex_rd == id_rs1) || (id_ex_rd == id_rs2));
+    wire stall;
+    hazard_unit my_hazard (
+        .id_ex_mem_read(id_ex_mem_read),
+        .id_ex_rd(id_ex_rd),
+        .id_rs1(id_rs1),
+        .id_rs2(id_rs2),
+        .stall(stall)
+    );
 
     //hold PC when stalling
     wire [31:0] pc_in_mux = stall ? pc_out : pc_next;
@@ -151,26 +145,10 @@ module riscv_top #(
         end
     end
 
-    //immediate generation
-    wire [31:0] i_ext = {{20{if_id_instr[31]}}, if_id_instr[31:20]};
-    wire [31:0] s_ext = {{20{if_id_instr[31]}}, if_id_instr[31:25], if_id_instr[11:7]};
-    wire [31:0] b_ext = {{19{if_id_instr[31]}}, if_id_instr[31], if_id_instr[7],
-                          if_id_instr[30:25], if_id_instr[11:8], 1'b0};
-    wire [31:0] u_ext = {if_id_instr[31:12], 12'b0};
-    wire [31:0] j_ext = {{11{if_id_instr[31]}}, if_id_instr[31], if_id_instr[19:12],
-                         if_id_instr[20], if_id_instr[30:21], 1'b0};
-    //opcodes are mutually exclusive, so a case (parallel select) states the
-    //intent; a ?: chain would describe a priority cascade that never matters
-    always @(*) begin
-        case (id_opcode)
-            OP_LOAD, OP_IMM, OP_JALR: id_imm_ext = i_ext;
-            OP_STORE:                 id_imm_ext = s_ext;
-            OP_BRANCH:                id_imm_ext = b_ext;
-            OP_LUI, OP_AUIPC:         id_imm_ext = u_ext;
-            OP_JAL:                   id_imm_ext = j_ext;
-            default:                  id_imm_ext = 32'b0; //R-type has no immediate
-        endcase
-    end
+    imm_gen my_imm_gen (
+        .instr(if_id_instr),
+        .imm(id_imm_ext)
+    );
 
     control_unit my_cu (
         .opcode(id_opcode),
@@ -244,61 +222,24 @@ module riscv_top #(
         end
     end
 
-    //ALU control derived from alu_op + funct3/funct7
-    always @(*) begin
-        case (id_ex_alu_op)
-            2'b00: ex_alu_control = 4'b0000; //ADD for load/store/ADDI
-            2'b01: ex_alu_control = 4'b0001; //SUB for branch comparison
-            2'b10: begin
-                case (id_ex_funct3)
-                    3'b000:  ex_alu_control = id_ex_funct7[5] ? 4'b0001 : 4'b0000; //SUB or ADD
-                    3'b001:  ex_alu_control = 4'b0101; //SLL
-                    3'b010:  ex_alu_control = 4'b1000; //SLT
-                    3'b011:  ex_alu_control = 4'b1001; //SLTU
-                    3'b100:  ex_alu_control = 4'b0100; //XOR
-                    3'b101:  ex_alu_control = id_ex_funct7[5] ? 4'b0111 : 4'b0110; //SRA or SRL
-                    3'b111:  ex_alu_control = 4'b0010; //AND
-                    3'b110:  ex_alu_control = 4'b0011; //OR
-                    default: ex_alu_control = 4'b0000;
-                endcase
-            end
-            //I-type ALU: same funct3 map as R-type, but funct7 applies only to
-            //shifts. funct3 000 is always ADDI - there is no SUBI.
-            2'b11: begin
-                case (id_ex_funct3)
-                    3'b000:  ex_alu_control = 4'b0000; //ADDI
-                    3'b001:  ex_alu_control = 4'b0101; //SLLI
-                    3'b010:  ex_alu_control = 4'b1000; //SLTI
-                    3'b011:  ex_alu_control = 4'b1001; //SLTIU
-                    3'b100:  ex_alu_control = 4'b0100; //XORI
-                    3'b101:  ex_alu_control = id_ex_funct7[5] ? 4'b0111 : 4'b0110; //SRAI or SRLI
-                    3'b110:  ex_alu_control = 4'b0011; //ORI
-                    3'b111:  ex_alu_control = 4'b0010; //ANDI
-                endcase
-            end
-            default: ex_alu_control = 4'b0000;
-        endcase
-    end
+    alu_decoder my_alu_decoder (
+        .alu_op(id_ex_alu_op),
+        .funct3(id_ex_funct3),
+        .funct7_5(id_ex_funct7[5]),
+        .alu_control(ex_alu_control)
+    );
 
-    //forwarding unit: select correct ALU source to resolve RAW hazards
-    reg [1:0] forward_a, forward_b;
-    always @(*) begin
-        //EX/MEM forwarding (higher priority)
-        if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs1))
-            forward_a = 2'b10;
-        //MEM/WB forwarding
-        else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs1))
-            forward_a = 2'b01;
-        else
-            forward_a = 2'b00;
-
-        if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs2))
-            forward_b = 2'b10;
-        else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs2))
-            forward_b = 2'b01;
-        else
-            forward_b = 2'b00;
-    end
+    wire [1:0] forward_a, forward_b;
+    forwarding_unit my_fwd (
+        .id_ex_rs1(id_ex_rs1),
+        .id_ex_rs2(id_ex_rs2),
+        .ex_mem_rd(ex_mem_rd),
+        .ex_mem_reg_write(ex_mem_reg_write),
+        .mem_wb_rd(mem_wb_rd),
+        .mem_wb_reg_write(mem_wb_reg_write),
+        .forward_a(forward_a),
+        .forward_b(forward_b)
+    );
 
     //AUIPC takes PC as operand A, LUI takes zero; both bypass forwarding
     //because neither instruction's rs1 field is a register specifier.

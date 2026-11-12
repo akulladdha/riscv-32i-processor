@@ -38,7 +38,7 @@ the owner drive where they want to.
 | | |
 |---|---|
 | ISA | 38 / 40 RV32I. Missing: `ECALL`, `EBREAK` (decode to silent NOP). `FENCE` is a NOP, which is legal here. |
-| Tests | 15 self-checking tests, all passing (`bash tests/run_tests.sh`) |
+| Tests | 16 self-checking tests (15 program-level + 1 unit), all passing (`bash tests/run_tests.sh`) |
 | Hazards | Forwarding (EX/MEM, MEM/WB), write-first regfile, load-use stall, 2-deep flush |
 | FPGA | **Not synthesizable to anything useful yet** — no output ports, async memories (Known Issues #1–#3) |
 | Language | Plain Verilog-2001. No SystemVerilog constructs anywhere. |
@@ -48,37 +48,41 @@ the owner drive where they want to.
 ## Module hierarchy
 
 ```
-riscv_top                 src/riscv_top.v   (pipeline regs, imm-gen, ALU decode,
-  |                                          forwarding, hazard, branch compare,
-  |                                          load/store lane logic, WB mux — all inline)
-  +-- pc               my_pc       src/pc.v
-  +-- instruction_mem  my_imem     src/instruction_mem.v   (param PROGRAM)
-  +-- control_unit     my_cu       src/control_unit.v
-  +-- reg_file         my_regfile  src/register_file.v     (module/file names differ)
-  +-- alu              my_alu      src/alu.v
-  +-- data_mem         my_dmem     src/data_mem.v
+riscv_top                 src/riscv_top.v   (pipeline regs, branch compare,
+  |                                          operand muxes, load/store lane
+  |                                          logic, WB mux — inline)
+  +-- pc               my_pc          src/pc.v
+  +-- instruction_mem  my_imem        src/instruction_mem.v   (param PROGRAM)
+  +-- hazard_unit      my_hazard      src/hazard_unit.v       (load-use stall)
+  +-- imm_gen          my_imm_gen     src/imm_gen.v
+  +-- control_unit     my_cu          src/control_unit.v
+  +-- reg_file         my_regfile     src/register_file.v     (module/file names differ)
+  +-- alu_decoder      my_alu_decoder src/alu_decoder.v       (in EX today; change C)
+  +-- forwarding_unit  my_fwd         src/forwarding_unit.v
+  +-- alu              my_alu         src/alu.v
+  +-- data_mem         my_dmem        src/data_mem.v
 ```
 
 `riscv_top` takes a `PROGRAM` parameter (default `"sample_program.hex"`) that is
 passed to `instruction_mem`. Each test overrides it.
 
-### Where things live in `src/riscv_top.v`
+### Order of logic in `src/riscv_top.v`
 
-| Logic | Lines (approx.) |
-|---|---|
-| Branch comparator (`funct3` → `branch_cond`) | 92–101 |
-| `branch_taken`, `jump_taken`, `redirect` / `flush` | 103–107 |
-| PC next / load-use `stall` / PC mux | 109–119 |
-| IF/ID register (flush clears, stall holds) | 134–143 |
-| Immediate generation (I/S/B/U/J, priority `?:` chain) | 145–158 |
-| ID/EX register (stall or flush → bubble) | 188–230 |
-| ALU control decode (`alu_op` + `funct3`/`funct7`) | 233–266 |
-| Forwarding unit | 270–287 |
-| Operand muxes, branch/jump targets (JALR LSB clear) | 291–311 |
-| EX/MEM register | 322–345 |
-| Store byte-lane select (SB/SH replicate + byte enable) | 349–364 |
-| Sub-word load extract and sign/zero extend | 379–390 |
-| MEM/WB register, WB mux | 393–409 |
+Declarations, then: branch comparator and `redirect`/`flush` → PC next, hazard
+unit, PC mux → IF/ID register (flush clears, stall holds) → imm_gen, control
+unit, register file → ID/EX register (stall or flush → bubble) → ALU decoder,
+forwarding unit, operand muxes, branch/jump targets (JALR LSB clear) → ALU →
+EX/MEM register → store byte-lane select → data memory → sub-word load extract
+→ MEM/WB register → WB mux. Search by comment; line numbers drift.
+
+**Opcode / ALU-op constants** are `localparam`s, currently duplicated where
+used (`imm_gen.v` opcodes; `alu_decoder.v` ALU codes must match `alu.v`'s case
+labels). A shared header would need an include path in the build; deferred.
+
+**Functions in RTL:** a `function` called from a continuous `assign` is
+re-evaluated only when its *arguments* change. A function must read nothing
+but its arguments, or simulation goes stale while synthesis is correct
+(this bit `forwarding_unit` during change A).
 
 ---
 
@@ -144,13 +148,14 @@ select and extend the byte/halfword **in MEM**, before the MEM/WB register.
 The whole suite, from the repo root, in **Git Bash**:
 
 ```bash
-bash tests/run_tests.sh          # all 15
+bash tests/run_tests.sh          # all 16
 bash tests/run_tests.sh loads    # name filter
 ```
 
 It assembles every `tests/progs/*.s` with `tests/asm.pl` (a small Perl RV32I
 assembler), compiles each `tests/tb/*_tb.v` against `src/*.v`, runs it, and
 tallies the results. It also runs the original `test/top_tb.v` as a regression.
+Unit tests in `tests/unit/<module>_tb.v` are compiled against `src/<module>.v` only, and must print a line ending in `PASS`.
 Build output goes to `tests/build/` (gitignored, as are generated `.hex` files).
 
 **Adding a test.** Write `tests/progs/<name>.s`, then
@@ -202,11 +207,12 @@ build junk kept out of caution and safe to delete.
 
 ## Planned changes (learning exercises, in suggested order)
 
-Each one should leave `bash tests/run_tests.sh` at 15/15.
+Each one should leave `bash tests/run_tests.sh` fully passing.
 
-- **A. Extract inline logic into modules.** Pull `forwarding_unit`,
-  `hazard_unit`, `imm_gen`, and `alu_decoder` out of `riscv_top.v` so the top
-  level becomes wiring. Each gets a self-checking unit test.
+- **A. ~~Extract inline logic into modules.~~ DONE.** `imm_gen`,
+  `alu_decoder`, `forwarding_unit`, `hazard_unit` extracted. Unit tests live in
+  `tests/unit/<module>_tb.v`, compiled against `src/<module>.v` alone; only
+  `forwarding_unit` has one so far. Branch comparator could follow.
 - **B. Immediate generator as a `case`.** Replace the `?:` priority chain with
   `case (opcode)`. The cases are mutually exclusive, so the intent is a
   parallel mux, not a priority encoder.
