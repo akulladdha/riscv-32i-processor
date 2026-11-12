@@ -1,7 +1,8 @@
+`default_nettype none
 module pc(
-    input clk,
-    input reset,
-    input [31:0] pc_in,
+    input  wire clk,
+    input  wire reset,
+    input  wire [31:0] pc_in,
     output reg [31:0] pc_out
 );
 
@@ -13,3 +14,5 @@ always @(posedge clk) begin
     end
 end
 endmodule
+
+`default_nettype wire

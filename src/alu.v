@@ -1,9 +1,9 @@
+`default_nettype none
 module alu (
-    input [31:0] a,
-    input [31:0] b,
-    input [3:0] opcode,
-    output reg [31:0] result,
-    output wire zero 
+    input  wire [31:0] a,
+    input  wire [31:0] b,
+    input  wire [3:0] opcode,
+    output reg [31:0] result
 
 );
     always @(*) begin
@@ -23,6 +23,6 @@ module alu (
         endcase
     end
 
-    assign zero = (result == 32'b0);
-
 endmodule
+
+`default_nettype wire

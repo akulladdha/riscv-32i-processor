@@ -80,7 +80,7 @@ reports. Predictions to check against reality:
 
 Subtle and worth understanding. A 32×32 file with 2 read ports and 1 write port
 would normally infer as distributed RAM. But
-[register_file.v:19-23](src/register_file.v#L19-L23) resets all 32 registers in a
+[reg_file.v](src/reg_file.v) (the reset `for` loop) resets all 32 registers in a
 `for` loop — and LUTRAM has no reset. That single loop forces ~1024 flip-flops.
 
 Fine on an XC7A35T (~41k FFs), but note what happened: **your reset strategy
@@ -191,7 +191,7 @@ deliberately, because you cannot add a print statement to a bitstream.
 
 | Item | Where | Note |
 |---|---|---|
-| Wide array index | [instruction_mem.v:12](src/instruction_mem.v#L12) | `memory[addr >> 2]` indexes a 1024-entry array with a 30-bit expression. Slice explicitly (`addr[11:2]`, as `data_mem` does) or synthesis may build a far wider address comparator than needed. |
+| ~~Wide array index~~ | `instruction_mem.v` | Fixed: now indexes `addr[11:2]`, like `data_mem`. |
 | Program initialisation | [instruction_mem.v:9](src/instruction_mem.v#L9) | `$readmemh` *does* work for BRAM init in Vivado, but the `.hex` must be added to the project as a design source, not merely present in the directory. Your program becomes part of the bitstream. |
 | No fetch bounds check | `CLAUDE.md` #10 | Past the program end the core fetches X forever. Harmless in simulation only by luck; on hardware it will execute whatever the BRAM initialises to. |
 | Double ALU decode | `COVERAGE.md` | `id_ex_funct7` is piped 7 bits wide to be read for one bit. Folding decode into `control_unit` removes the field. |

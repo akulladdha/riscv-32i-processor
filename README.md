@@ -49,7 +49,7 @@ instruction matrix in [COVERAGE.md](COVERAGE.md).
 | Stage | Module(s) | Description |
 |---|---|---|
 | IF | `pc.v`, `instruction_mem.v` | Fetch instruction, increment PC |
-| ID | `control_unit.v`, `register_file.v` | Decode, read registers, generate immediate |
+| ID | `control_unit.v`, `reg_file.v` | Decode, read registers, generate immediate |
 | EX | `alu.v` | ALU operation, branch condition, branch/jump target |
 | MEM | `data_mem.v` | Read or write data memory, sub-word extension |
 | WB | (in `riscv_top.v`) | Select and write result back to the register file |

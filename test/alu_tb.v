@@ -5,14 +5,12 @@ module alu_tb();
     reg  [31:0] b_top;
     reg  [3:0]  op_top;
     wire [31:0] res_top;
-    wire        zero_top;
 
     alu uut (
         .a(a_top),
         .b(b_top),
         .opcode(op_top),
-        .result(res_top),
-        .zero(zero_top)
+        .result(res_top)
     );
 
     initial begin

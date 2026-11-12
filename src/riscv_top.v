@@ -1,9 +1,23 @@
+`default_nettype none
 module riscv_top #(
     parameter PROGRAM = "sample_program.hex"
 )(
-    input clk,
-    input rst
+    input  wire clk,
+    input  wire rst,
+    input  wire ce,     //clock enable: the core advances only on cycles where ce=1
+    //debug observation ports: read-only views of architectural state, so a
+    //board wrapper can display the CPU (and so synthesis keeps it)
+    input  wire [4:0]  dbg_reg_sel,
+    output wire [31:0] dbg_reg_data,
+    output wire [31:0] dbg_pc,
+    output reg  halted, //sticky: an ECALL/EBREAK or illegal instruction committed
+    output reg  error   //sticky: the halt was caused by an illegal instruction
 );
+
+    //Canonical NOP, ADDI x0, x0, 0. Bubbles inserted into IF/ID must be a real
+    //instruction: the all-zero word is defined ILLEGAL by RISC-V, and would
+    //now halt the core on every flush.
+    localparam [31:0] NOP = 32'h00000013;
 
     //IF stage wires
     wire [31:0] if_instr;
@@ -23,12 +37,15 @@ module riscv_top #(
     wire [6:0]  id_funct7 = if_id_instr[31:25];
 
     wire [31:0] id_reg_data1, id_reg_data2;
-    wire [31:0] id_imm_ext;
+    wire [31:0] id_imm_ext; //driven by imm_gen's output port
     wire        id_reg_write, id_alu_src, id_mem_read, id_mem_write, id_mem_to_reg, id_branch;
     wire [1:0]  id_alu_op;
+    wire [3:0]  id_alu_control;
     wire [1:0]  id_alu_a_src;
     wire        id_jump;
     wire        id_jalr;
+    wire        id_uses_rs1, id_uses_rs2;
+    wire        id_halt, id_illegal;
 
     //ID/EX pipeline register
     reg [31:0] id_ex_pc;
@@ -39,20 +56,20 @@ module riscv_top #(
     reg [4:0]  id_ex_rs1;
     reg [4:0]  id_ex_rs2;
     reg [2:0]  id_ex_funct3;
-    reg [6:0]  id_ex_funct7;
+    reg [3:0]  id_ex_alu_control; //decoded in ID; replaces alu_op + funct7
     reg        id_ex_reg_write;
     reg        id_ex_alu_src;
     reg        id_ex_mem_read;
     reg        id_ex_mem_write;
     reg        id_ex_mem_to_reg;
     reg        id_ex_branch;
-    reg [1:0]  id_ex_alu_op;
     reg [1:0]  id_ex_alu_a_src;
     reg        id_ex_jump;
     reg        id_ex_jalr;
+    reg        id_ex_halt;
+    reg        id_ex_illegal;
 
     //EX stage wires
-    reg  [3:0]  ex_alu_control;
     wire [31:0] ex_alu_a;
     wire [31:0] ex_alu_b_reg;
     wire [31:0] ex_alu_src2;
@@ -106,17 +123,44 @@ module riscv_top #(
     wire redirect     = branch_taken || jump_taken;
     wire flush        = redirect;
 
+    //Halt. Requested from EX, not ID: EX is this pipeline's commit point, the
+    //first stage where nothing older can still redirect away from the
+    //instruction. Halting from ID would obey a wrong-path ECALL sitting in the
+    //shadow of a taken branch (tests/progs/halt.s checks exactly that).
+    wire halt_req = id_ex_halt || id_ex_illegal;
+    //stop: freeze the front end (PC, IF/ID, ID/EX) from the moment the halting
+    //instruction is in EX. MEM and WB are left alone, so older instructions
+    //drain and commit normally.
+    wire stop     = halt_req || halted;
+
+    //sticky status: set once, held until reset
+    always @(posedge clk) begin
+        if (rst) begin
+            halted <= 1'b0;
+            error  <= 1'b0;
+        end else if (ce && halt_req && !halted) begin
+            halted <= 1'b1;
+            error  <= id_ex_illegal;
+        end
+    end
+
     assign if_pc_plus4 = pc_out + 32'd4;
     //use ex_branch_target directly — it's valid while BEQ is in EX
     wire [31:0] pc_next = redirect ? ex_jump_target : if_pc_plus4;
 
-    //load-use hazard: stall if LW in EX and dependent instruction in ID
-    wire stall = id_ex_mem_read &&
-                 (id_ex_rd != 5'b0) &&
-                 ((id_ex_rd == id_rs1) || (id_ex_rd == id_rs2));
+    wire stall;
+    hazard_unit my_hazard (
+        .id_ex_mem_read(id_ex_mem_read),
+        .id_ex_rd(id_ex_rd),
+        .id_rs1(id_rs1),
+        .id_rs2(id_rs2),
+        .id_uses_rs1(id_uses_rs1),
+        .id_uses_rs2(id_uses_rs2),
+        .stall(stall)
+    );
 
-    //hold PC when stalling
-    wire [31:0] pc_in_mux = stall ? pc_out : pc_next;
+    //hold PC when stalling or stopped
+    wire [31:0] pc_in_mux = (!ce || stall || stop) ? pc_out : pc_next;
 
     pc my_pc (
         .clk(clk),
@@ -130,32 +174,21 @@ module riscv_top #(
         .instruction(if_instr)
     );
 
-    //IF/ID register: flush on taken branch, hold on stall
+    //IF/ID register: NOP on reset, taken branch, or halt; hold on stall
     always @(posedge clk) begin
-        if (rst || flush) begin
+        if (rst || (ce && (flush || stop))) begin
             if_id_pc       <= 32'b0;
-            if_id_instr    <= 32'b0;
-        end else if (!stall) begin
+            if_id_instr    <= NOP;
+        end else if (ce && !stall) begin
             if_id_pc       <= pc_out;
             if_id_instr    <= if_instr;
         end
     end
 
-    //immediate generation
-    wire [31:0] i_ext = {{20{if_id_instr[31]}}, if_id_instr[31:20]};
-    wire [31:0] s_ext = {{20{if_id_instr[31]}}, if_id_instr[31:25], if_id_instr[11:7]};
-    wire [31:0] b_ext = {{19{if_id_instr[31]}}, if_id_instr[31], if_id_instr[7],
-                          if_id_instr[30:25], if_id_instr[11:8], 1'b0};
-    wire [31:0] u_ext = {if_id_instr[31:12], 12'b0};
-    wire [31:0] j_ext = {{11{if_id_instr[31]}}, if_id_instr[31], if_id_instr[19:12],
-                         if_id_instr[20], if_id_instr[30:21], 1'b0};
-    assign id_imm_ext = (id_opcode == 7'b0000011 || id_opcode == 7'b0010011 ||
-                         id_opcode == 7'b1100111) ? i_ext :
-                        (id_opcode == 7'b0100011) ? s_ext :
-                        (id_opcode == 7'b1100011) ? b_ext :
-                        (id_opcode == 7'b0110111 || id_opcode == 7'b0010111) ? u_ext :
-                        (id_opcode == 7'b1101111) ? j_ext :
-                        32'b0;
+    imm_gen my_imm_gen (
+        .instr(if_id_instr),
+        .imm(id_imm_ext)
+    );
 
     control_unit my_cu (
         .opcode(id_opcode),
@@ -168,25 +201,41 @@ module riscv_top #(
         .branch(id_branch),
         .alu_a_src(id_alu_a_src),
         .jump(id_jump),
-        .jalr(id_jalr)
+        .jalr(id_jalr),
+        .uses_rs1(id_uses_rs1),
+        .uses_rs2(id_uses_rs2),
+        .halt(id_halt),
+        .illegal(id_illegal)
+    );
+
+    //ALU decode happens in ID, in parallel with the register-file read, so
+    //ID/EX carries the 4-bit answer instead of alu_op + funct7 and the
+    //decoder's delay is off the EX critical path.
+    alu_decoder my_alu_decoder (
+        .alu_op(id_alu_op),
+        .funct3(id_funct3),
+        .funct7_5(id_funct7[5]),
+        .alu_control(id_alu_control)
     );
 
     //register reads happen in ID, writeback comes from MEM/WB
     reg_file my_regfile (
         .clk(clk),
         .rst(rst),
-        .rg_write_en(mem_wb_reg_write),
+        .rg_write_en(mem_wb_reg_write && ce), //a write is a state change: gate it
         .rg_des_addr(mem_wb_rd),
         .rg_sr1_addr(id_rs1),
         .rg_sr2_addr(id_rs2),
         .rg_des_data(wb_write_data),
         .rg_sr1_data(id_reg_data1),
-        .rg_sr2_data(id_reg_data2)
+        .rg_sr2_data(id_reg_data2),
+        .dbg_addr(dbg_reg_sel),
+        .dbg_data(dbg_reg_data)
     );
 
-    //ID/EX register: inject NOP bubble on stall or flush
+    //ID/EX register: inject NOP bubble on stall, flush, or halt
     always @(posedge clk) begin
-        if (rst || stall || flush) begin
+        if (rst || (ce && (stall || flush || stop))) begin
             id_ex_pc         <= 32'b0;
             id_ex_reg_data1  <= 32'b0;
             id_ex_reg_data2  <= 32'b0;
@@ -195,18 +244,19 @@ module riscv_top #(
             id_ex_rs1        <= 5'b0;
             id_ex_rs2        <= 5'b0;
             id_ex_funct3     <= 3'b0;
-            id_ex_funct7     <= 7'b0;
+            id_ex_alu_control <= 4'b0;
             id_ex_reg_write  <= 1'b0;
             id_ex_alu_src    <= 1'b0;
             id_ex_mem_read   <= 1'b0;
             id_ex_mem_write  <= 1'b0;
             id_ex_mem_to_reg <= 1'b0;
             id_ex_branch     <= 1'b0;
-            id_ex_alu_op     <= 2'b0;
             id_ex_alu_a_src  <= 2'b0;
             id_ex_jump       <= 1'b0;
             id_ex_jalr       <= 1'b0;
-        end else begin
+            id_ex_halt       <= 1'b0;
+            id_ex_illegal    <= 1'b0;
+        end else if (ce) begin
             id_ex_pc         <= if_id_pc;
             id_ex_reg_data1  <= id_reg_data1;
             id_ex_reg_data2  <= id_reg_data2;
@@ -215,75 +265,32 @@ module riscv_top #(
             id_ex_rs1        <= id_rs1;
             id_ex_rs2        <= id_rs2;
             id_ex_funct3     <= id_funct3;
-            id_ex_funct7     <= id_funct7;
+            id_ex_alu_control <= id_alu_control;
             id_ex_reg_write  <= id_reg_write;
             id_ex_alu_src    <= id_alu_src;
             id_ex_mem_read   <= id_mem_read;
             id_ex_mem_write  <= id_mem_write;
             id_ex_mem_to_reg <= id_mem_to_reg;
             id_ex_branch     <= id_branch;
-            id_ex_alu_op     <= id_alu_op;
             id_ex_alu_a_src  <= id_alu_a_src;
             id_ex_jump       <= id_jump;
             id_ex_jalr       <= id_jalr;
+            id_ex_halt       <= id_halt;
+            id_ex_illegal    <= id_illegal;
         end
     end
 
-    //ALU control derived from alu_op + funct3/funct7
-    always @(*) begin
-        case (id_ex_alu_op)
-            2'b00: ex_alu_control = 4'b0000; //ADD for load/store/ADDI
-            2'b01: ex_alu_control = 4'b0001; //SUB for branch comparison
-            2'b10: begin
-                case (id_ex_funct3)
-                    3'b000:  ex_alu_control = id_ex_funct7[5] ? 4'b0001 : 4'b0000; //SUB or ADD
-                    3'b001:  ex_alu_control = 4'b0101; //SLL
-                    3'b010:  ex_alu_control = 4'b1000; //SLT
-                    3'b011:  ex_alu_control = 4'b1001; //SLTU
-                    3'b100:  ex_alu_control = 4'b0100; //XOR
-                    3'b101:  ex_alu_control = id_ex_funct7[5] ? 4'b0111 : 4'b0110; //SRA or SRL
-                    3'b111:  ex_alu_control = 4'b0010; //AND
-                    3'b110:  ex_alu_control = 4'b0011; //OR
-                    default: ex_alu_control = 4'b0000;
-                endcase
-            end
-            //I-type ALU: same funct3 map as R-type, but funct7 applies only to
-            //shifts. funct3 000 is always ADDI - there is no SUBI.
-            2'b11: begin
-                case (id_ex_funct3)
-                    3'b000:  ex_alu_control = 4'b0000; //ADDI
-                    3'b001:  ex_alu_control = 4'b0101; //SLLI
-                    3'b010:  ex_alu_control = 4'b1000; //SLTI
-                    3'b011:  ex_alu_control = 4'b1001; //SLTIU
-                    3'b100:  ex_alu_control = 4'b0100; //XORI
-                    3'b101:  ex_alu_control = id_ex_funct7[5] ? 4'b0111 : 4'b0110; //SRAI or SRLI
-                    3'b110:  ex_alu_control = 4'b0011; //ORI
-                    3'b111:  ex_alu_control = 4'b0010; //ANDI
-                endcase
-            end
-            default: ex_alu_control = 4'b0000;
-        endcase
-    end
-
-    //forwarding unit: select correct ALU source to resolve RAW hazards
-    reg [1:0] forward_a, forward_b;
-    always @(*) begin
-        //EX/MEM forwarding (higher priority)
-        if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs1))
-            forward_a = 2'b10;
-        //MEM/WB forwarding
-        else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs1))
-            forward_a = 2'b01;
-        else
-            forward_a = 2'b00;
-
-        if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs2))
-            forward_b = 2'b10;
-        else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs2))
-            forward_b = 2'b01;
-        else
-            forward_b = 2'b00;
-    end
+    wire [1:0] forward_a, forward_b;
+    forwarding_unit my_fwd (
+        .id_ex_rs1(id_ex_rs1),
+        .id_ex_rs2(id_ex_rs2),
+        .ex_mem_rd(ex_mem_rd),
+        .ex_mem_reg_write(ex_mem_reg_write),
+        .mem_wb_rd(mem_wb_rd),
+        .mem_wb_reg_write(mem_wb_reg_write),
+        .forward_a(forward_a),
+        .forward_b(forward_b)
+    );
 
     //AUIPC takes PC as operand A, LUI takes zero; both bypass forwarding
     //because neither instruction's rs1 field is a register specifier.
@@ -311,11 +318,10 @@ module riscv_top #(
                                          : ex_branch_target;
 
     alu my_alu (
-        .opcode(ex_alu_control),
+        .opcode(id_ex_alu_control),
         .a(ex_alu_a),
         .b(ex_alu_src2),
         .result(ex_alu_result)
-        //.zero() left unconnected: the funct3 branch comparator replaced it
     );
 
     //EX/MEM register
@@ -329,7 +335,7 @@ module riscv_top #(
             ex_mem_mem_write     <= 1'b0;
             ex_mem_mem_to_reg    <= 1'b0;
             ex_mem_funct3        <= 3'b0;
-        end else begin
+        end else if (ce) begin
             ex_mem_alu_result    <= ex_alu_result;
             ex_mem_reg_data2     <= ex_alu_b_reg; //forwarded rs2 for SW
             ex_mem_rd            <= id_ex_rd;
@@ -366,7 +372,7 @@ module riscv_top #(
     data_mem my_dmem (
         .clk(clk),
         .mem_read(ex_mem_mem_read),
-        .mem_write(ex_mem_mem_write),
+        .mem_write(ex_mem_mem_write && ce),
         .byte_en(mem_byte_en),
         .addr(ex_mem_alu_result),
         .write_data(mem_store_data),
@@ -397,7 +403,7 @@ module riscv_top #(
             mem_wb_rd          <= 5'b0;
             mem_wb_reg_write   <= 1'b0;
             mem_wb_mem_to_reg  <= 1'b0;
-        end else begin
+        end else if (ce) begin
             mem_wb_alu_result  <= ex_mem_alu_result;
             mem_wb_read_data   <= mem_load_data;
             mem_wb_rd          <= ex_mem_rd;
@@ -406,6 +412,10 @@ module riscv_top #(
         end
     end
 
+    assign dbg_pc = pc_out;
+
     assign wb_write_data = mem_wb_mem_to_reg ? mem_wb_read_data : mem_wb_alu_result;
 
 endmodule
+
+`default_nettype wire

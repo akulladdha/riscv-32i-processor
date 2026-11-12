@@ -1,11 +1,12 @@
+`default_nettype none
 module data_mem(
-    input clk,
-    input mem_read,
-    input mem_write,
-    input [3:0] byte_en, //per-lane write enable, for SB and SH
-    input [31:0] addr,
-    input [31:0] write_data,
-    output [31:0] read_data
+    input  wire clk,
+    input  wire mem_read,
+    input  wire mem_write,
+    input  wire [3:0] byte_en, //per-lane write enable, for SB and SH
+    input  wire [31:0] addr,
+    input  wire [31:0] write_data,
+    output wire [31:0] read_data
 );
 
     reg [31:0] memory [0:1023];
@@ -22,3 +23,5 @@ module data_mem(
     assign read_data = (mem_read) ? memory[addr[11:2]] : 32'b0;
 
 endmodule
+
+`default_nettype wire

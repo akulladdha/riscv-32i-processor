@@ -33,3 +33,6 @@ tests/build/
 tests/progs/*.hex
 
 
+
+# ---- FPGA build output ----
+fpga/build/
