@@ -57,7 +57,7 @@ riscv_top                 src/riscv_top.v   (pipeline regs, branch compare,
   +-- imm_gen          my_imm_gen     src/imm_gen.v
   +-- control_unit     my_cu          src/control_unit.v
   +-- reg_file         my_regfile     src/register_file.v     (module/file names differ)
-  +-- alu_decoder      my_alu_decoder src/alu_decoder.v       (in EX today; change C)
+  +-- alu_decoder      my_alu_decoder src/alu_decoder.v       (in ID)
   +-- forwarding_unit  my_fwd         src/forwarding_unit.v
   +-- alu              my_alu         src/alu.v
   +-- data_mem         my_dmem        src/data_mem.v
@@ -99,9 +99,9 @@ initialized by `$readmemh(PROGRAM, …)`.
 **Control.** `control_unit` decodes the **opcode only**, emitting `reg_write`,
 `alu_src`, `mem_read`, `mem_write`, `mem_to_reg`, `branch`, `jump`, `jalr`,
 `alu_op[1:0]`, `alu_a_src[1:0]`. It assigns defaults before its `case`, so it
-infers no latches. The final 4-bit ALU operation is decoded **again** in EX from
-`id_ex_alu_op` + `id_ex_funct3` + `id_ex_funct7[5]` — decode is split across two
-stages (Planned change C).
+infers no latches. `alu_decoder` turns `alu_op` + `funct3` + `funct7[5]` into the
+4-bit ALU operation, also in ID (in parallel with the register-file read), so
+ID/EX carries `id_ex_alu_control` rather than `alu_op` and `funct7`.
 
 `alu_op`: `00` add (loads/stores/LUI/AUIPC), `01` sub, `10` R-type decode,
 `11` I-type decode. `alu_a_src`: `00` forwarded rs1, `01` PC (AUIPC, JAL/JALR
@@ -215,9 +215,9 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
   `forwarding_unit` has one so far. Branch comparator could follow.
 - **B. ~~Immediate generator as a `case`.~~ DONE.** Now `imm_gen.v`, a
   `case` on named opcodes — exclusive selection, not a priority chain.
-- **C. Single-stage decode.** Have `control_unit` take `funct3`/`funct7` and
-  emit the 4-bit `alu_control` directly. This removes `id_ex_alu_op` and
-  `id_ex_funct7` from the ID/EX register.
+- **C. ~~Single-stage decode.~~ DONE.** `alu_decoder` moved from EX to ID.
+  ID/EX lost `alu_op` (2) and `funct7` (7), gained `alu_control` (4): 5 fewer
+  flops, and decoder delay is off the EX critical path.
 - **D. Precise load-use stall.** Only compare `id_rs2` when the ID instruction
   actually reads rs2 (R, S, B), and `id_rs1` when it reads rs1 (not
   LUI/AUIPC/JAL). Today the comparison is spurious for I/U/J-type instructions,
@@ -227,7 +227,11 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
   a halt, which also gives the core a defined stop condition.
 - **F. Hygiene.** Rename `register_file.v` → `reg_file.v` (or the module), pick
   one array declaration direction, slice IMEM with `addr[11:2]` like DMEM
-  does, and drop the unused ALU `zero` port.
+  does, drop the unused ALU `zero` port, and add `` `default_nettype none `` to
+  every RTL file (explicit `wire` on all ports; restore `` `default_nettype wire ``
+  at file end so testbenches still compile). Without it a mistyped net name is
+  silently created as a 1-bit wire — demonstrated during change C: compiles
+  with a warning, fails 14/16 tests.
 - **G. Register file without reset** (so it can infer LUTRAM). Do this as part
   of the FPGA work; see Known Issue #4.
 
@@ -269,7 +273,7 @@ Tags: **[FPGA blocker]**, **[latent]**, **[hygiene]**.
    Unreachable today. It becomes live if anything ever makes a load and a
    redirect coincide in EX.
 10. **[hygiene] Monolithic top level, split decode, naming mismatches.** See
-    Planned changes A, C, F. Also, MEM/WB carries both the ALU result and the
+    Planned change F. Also, MEM/WB carries both the ALU result and the
     load data plus a select (65 bits) where one resolved 32-bit value would do.
 11. **[hygiene] `$readmemh` uses a relative path.** It depends on the working
     directory in simulation. For Vivado, the `.hex` must be added to the

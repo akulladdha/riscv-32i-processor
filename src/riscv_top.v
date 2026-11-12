@@ -26,6 +26,7 @@ module riscv_top #(
     wire [31:0] id_imm_ext; //driven by imm_gen's output port
     wire        id_reg_write, id_alu_src, id_mem_read, id_mem_write, id_mem_to_reg, id_branch;
     wire [1:0]  id_alu_op;
+    wire [3:0]  id_alu_control;
     wire [1:0]  id_alu_a_src;
     wire        id_jump;
     wire        id_jalr;
@@ -39,20 +40,18 @@ module riscv_top #(
     reg [4:0]  id_ex_rs1;
     reg [4:0]  id_ex_rs2;
     reg [2:0]  id_ex_funct3;
-    reg [6:0]  id_ex_funct7;
+    reg [3:0]  id_ex_alu_control; //decoded in ID; replaces alu_op + funct7
     reg        id_ex_reg_write;
     reg        id_ex_alu_src;
     reg        id_ex_mem_read;
     reg        id_ex_mem_write;
     reg        id_ex_mem_to_reg;
     reg        id_ex_branch;
-    reg [1:0]  id_ex_alu_op;
     reg [1:0]  id_ex_alu_a_src;
     reg        id_ex_jump;
     reg        id_ex_jalr;
 
     //EX stage wires
-    wire [3:0]  ex_alu_control;
     wire [31:0] ex_alu_a;
     wire [31:0] ex_alu_b_reg;
     wire [31:0] ex_alu_src2;
@@ -164,6 +163,16 @@ module riscv_top #(
         .jalr(id_jalr)
     );
 
+    //ALU decode happens in ID, in parallel with the register-file read, so
+    //ID/EX carries the 4-bit answer instead of alu_op + funct7 and the
+    //decoder's delay is off the EX critical path.
+    alu_decoder my_alu_decoder (
+        .alu_op(id_alu_op),
+        .funct3(id_funct3),
+        .funct7_5(id_funct7[5]),
+        .alu_control(id_alu_control)
+    );
+
     //register reads happen in ID, writeback comes from MEM/WB
     reg_file my_regfile (
         .clk(clk),
@@ -188,14 +197,13 @@ module riscv_top #(
             id_ex_rs1        <= 5'b0;
             id_ex_rs2        <= 5'b0;
             id_ex_funct3     <= 3'b0;
-            id_ex_funct7     <= 7'b0;
+            id_ex_alu_control <= 4'b0;
             id_ex_reg_write  <= 1'b0;
             id_ex_alu_src    <= 1'b0;
             id_ex_mem_read   <= 1'b0;
             id_ex_mem_write  <= 1'b0;
             id_ex_mem_to_reg <= 1'b0;
             id_ex_branch     <= 1'b0;
-            id_ex_alu_op     <= 2'b0;
             id_ex_alu_a_src  <= 2'b0;
             id_ex_jump       <= 1'b0;
             id_ex_jalr       <= 1'b0;
@@ -208,26 +216,18 @@ module riscv_top #(
             id_ex_rs1        <= id_rs1;
             id_ex_rs2        <= id_rs2;
             id_ex_funct3     <= id_funct3;
-            id_ex_funct7     <= id_funct7;
+            id_ex_alu_control <= id_alu_control;
             id_ex_reg_write  <= id_reg_write;
             id_ex_alu_src    <= id_alu_src;
             id_ex_mem_read   <= id_mem_read;
             id_ex_mem_write  <= id_mem_write;
             id_ex_mem_to_reg <= id_mem_to_reg;
             id_ex_branch     <= id_branch;
-            id_ex_alu_op     <= id_alu_op;
             id_ex_alu_a_src  <= id_alu_a_src;
             id_ex_jump       <= id_jump;
             id_ex_jalr       <= id_jalr;
         end
     end
-
-    alu_decoder my_alu_decoder (
-        .alu_op(id_ex_alu_op),
-        .funct3(id_ex_funct3),
-        .funct7_5(id_ex_funct7[5]),
-        .alu_control(ex_alu_control)
-    );
 
     wire [1:0] forward_a, forward_b;
     forwarding_unit my_fwd (
@@ -267,7 +267,7 @@ module riscv_top #(
                                          : ex_branch_target;
 
     alu my_alu (
-        .opcode(ex_alu_control),
+        .opcode(id_ex_alu_control),
         .a(ex_alu_a),
         .b(ex_alu_src2),
         .result(ex_alu_result)
