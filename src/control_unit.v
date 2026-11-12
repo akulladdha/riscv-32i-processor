@@ -15,8 +15,9 @@ module control_unit(
     //positions are fixed in every encoding, but in I/U/J formats they hold
     //immediate bits, so the hazard unit must not compare them.
     output reg uses_rs1, //R, I-ALU, load, store, branch, JALR
-    output reg uses_rs2  //R, store, branch
-
+    output reg uses_rs2, //R, store, branch
+    output reg halt,     //ECALL or EBREAK: stop the core once it commits
+    output reg illegal   //opcode is not RV32I: stop the core and flag an error
 );
 always @(*) begin
     reg_write  = 0;
@@ -31,6 +32,8 @@ always @(*) begin
     jalr       = 0;
     uses_rs1   = 0;
     uses_rs2   = 0;
+    halt       = 0;
+    illegal    = 0;
     case(opcode)
         7'b0110011: begin //R-type ADD
             uses_rs1   = 1;
@@ -102,8 +105,17 @@ always @(*) begin
             jalr       = 1;
             alu_a_src  = 2'b01; //link value is PC + 4
         end
+        7'b0001111: begin // FENCE: legal, and a NOP on this in-order, cacheless core
+        end
+        7'b1110011: begin // SYSTEM: ECALL / EBREAK. No OS to trap to, so both halt.
+            halt       = 1;
+        end
+        //Every opcode not listed above is illegal. Setting the flag in the
+        //default arm means nothing needs to remember to clear it. This also
+        //catches all-zero words (0x00000000 is defined illegal) and, in
+        //simulation, X words fetched from past the end of the program.
         default: begin
-            
+            illegal    = 1;
         end
         endcase
     end

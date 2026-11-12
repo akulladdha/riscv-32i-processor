@@ -3,8 +3,15 @@ module riscv_top #(
     parameter PROGRAM = "sample_program.hex"
 )(
     input  wire clk,
-    input  wire rst
+    input  wire rst,
+    output reg  halted, //sticky: an ECALL/EBREAK or illegal instruction committed
+    output reg  error   //sticky: the halt was caused by an illegal instruction
 );
+
+    //Canonical NOP, ADDI x0, x0, 0. Bubbles inserted into IF/ID must be a real
+    //instruction: the all-zero word is defined ILLEGAL by RISC-V, and would
+    //now halt the core on every flush.
+    localparam [31:0] NOP = 32'h00000013;
 
     //IF stage wires
     wire [31:0] if_instr;
@@ -32,6 +39,7 @@ module riscv_top #(
     wire        id_jump;
     wire        id_jalr;
     wire        id_uses_rs1, id_uses_rs2;
+    wire        id_halt, id_illegal;
 
     //ID/EX pipeline register
     reg [31:0] id_ex_pc;
@@ -52,6 +60,8 @@ module riscv_top #(
     reg [1:0]  id_ex_alu_a_src;
     reg        id_ex_jump;
     reg        id_ex_jalr;
+    reg        id_ex_halt;
+    reg        id_ex_illegal;
 
     //EX stage wires
     wire [31:0] ex_alu_a;
@@ -107,6 +117,27 @@ module riscv_top #(
     wire redirect     = branch_taken || jump_taken;
     wire flush        = redirect;
 
+    //Halt. Requested from EX, not ID: EX is this pipeline's commit point, the
+    //first stage where nothing older can still redirect away from the
+    //instruction. Halting from ID would obey a wrong-path ECALL sitting in the
+    //shadow of a taken branch (tests/progs/halt.s checks exactly that).
+    wire halt_req = id_ex_halt || id_ex_illegal;
+    //stop: freeze the front end (PC, IF/ID, ID/EX) from the moment the halting
+    //instruction is in EX. MEM and WB are left alone, so older instructions
+    //drain and commit normally.
+    wire stop     = halt_req || halted;
+
+    //sticky status: set once, held until reset
+    always @(posedge clk) begin
+        if (rst) begin
+            halted <= 1'b0;
+            error  <= 1'b0;
+        end else if (halt_req && !halted) begin
+            halted <= 1'b1;
+            error  <= id_ex_illegal;
+        end
+    end
+
     assign if_pc_plus4 = pc_out + 32'd4;
     //use ex_branch_target directly — it's valid while BEQ is in EX
     wire [31:0] pc_next = redirect ? ex_jump_target : if_pc_plus4;
@@ -122,8 +153,8 @@ module riscv_top #(
         .stall(stall)
     );
 
-    //hold PC when stalling
-    wire [31:0] pc_in_mux = stall ? pc_out : pc_next;
+    //hold PC when stalling or stopped
+    wire [31:0] pc_in_mux = (stall || stop) ? pc_out : pc_next;
 
     pc my_pc (
         .clk(clk),
@@ -137,11 +168,11 @@ module riscv_top #(
         .instruction(if_instr)
     );
 
-    //IF/ID register: flush on taken branch, hold on stall
+    //IF/ID register: NOP on reset, taken branch, or halt; hold on stall
     always @(posedge clk) begin
-        if (rst || flush) begin
+        if (rst || flush || stop) begin
             if_id_pc       <= 32'b0;
-            if_id_instr    <= 32'b0;
+            if_id_instr    <= NOP;
         end else if (!stall) begin
             if_id_pc       <= pc_out;
             if_id_instr    <= if_instr;
@@ -166,7 +197,9 @@ module riscv_top #(
         .jump(id_jump),
         .jalr(id_jalr),
         .uses_rs1(id_uses_rs1),
-        .uses_rs2(id_uses_rs2)
+        .uses_rs2(id_uses_rs2),
+        .halt(id_halt),
+        .illegal(id_illegal)
     );
 
     //ALU decode happens in ID, in parallel with the register-file read, so
@@ -192,9 +225,9 @@ module riscv_top #(
         .rg_sr2_data(id_reg_data2)
     );
 
-    //ID/EX register: inject NOP bubble on stall or flush
+    //ID/EX register: inject NOP bubble on stall, flush, or halt
     always @(posedge clk) begin
-        if (rst || stall || flush) begin
+        if (rst || stall || flush || stop) begin
             id_ex_pc         <= 32'b0;
             id_ex_reg_data1  <= 32'b0;
             id_ex_reg_data2  <= 32'b0;
@@ -213,6 +246,8 @@ module riscv_top #(
             id_ex_alu_a_src  <= 2'b0;
             id_ex_jump       <= 1'b0;
             id_ex_jalr       <= 1'b0;
+            id_ex_halt       <= 1'b0;
+            id_ex_illegal    <= 1'b0;
         end else begin
             id_ex_pc         <= if_id_pc;
             id_ex_reg_data1  <= id_reg_data1;
@@ -232,6 +267,8 @@ module riscv_top #(
             id_ex_alu_a_src  <= id_alu_a_src;
             id_ex_jump       <= id_jump;
             id_ex_jalr       <= id_jalr;
+            id_ex_halt       <= id_halt;
+            id_ex_illegal    <= id_illegal;
         end
     end
 

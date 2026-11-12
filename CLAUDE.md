@@ -37,8 +37,8 @@ the owner drive where they want to.
 
 | | |
 |---|---|
-| ISA | 38 / 40 RV32I. Missing: `ECALL`, `EBREAK` (decode to silent NOP). `FENCE` is a NOP, which is legal here. |
-| Tests | 17 self-checking tests (16 program-level + 1 unit), all passing (`bash tests/run_tests.sh`) |
+| ISA | RV32I. `ECALL`/`EBREAK` halt the core (no OS to trap to); unknown opcodes halt with `error`. `FENCE` is a NOP, which is legal here. CSR instructions (SYSTEM, funct3 != 0) are not implemented and also halt. |
+| Tests | 19 self-checking tests (18 program-level + 1 unit), all passing (`bash tests/run_tests.sh`) |
 | Hazards | Forwarding (EX/MEM, MEM/WB), write-first regfile, load-use stall, 2-deep flush |
 | FPGA | **Not synthesizable to anything useful yet** — no output ports, async memories (Known Issues #1–#3) |
 | Language | Plain Verilog-2001. No SystemVerilog constructs anywhere. |
@@ -130,6 +130,11 @@ loop.
 **Load-use stall.** If the EX instruction is a load whose `rd` matches a source
 register ID actually reads (`uses_rs1`/`uses_rs2` from `control_unit`), freeze the PC, hold IF/ID, and bubble ID/EX. One cycle.
 
+**Halt.** `halt_req` (ECALL/EBREAK/illegal in EX) or the sticky `halted`
+flop asserts `stop`: PC holds, IF/ID loads NOP, ID/EX bubbles. Older
+instructions in MEM/WB complete. Outputs `halted`, `error` stay set until
+reset.
+
 **Stall/flush priority.** IF/ID: flush beats stall. ID/EX: either clears. PC:
 stall beats redirect — currently unreachable, since `stall` needs a load in EX
 and `redirect` needs a branch/jump in EX.
@@ -147,7 +152,7 @@ select and extend the byte/halfword **in MEM**, before the MEM/WB register.
 The whole suite, from the repo root, in **Git Bash**:
 
 ```bash
-bash tests/run_tests.sh          # all 17
+bash tests/run_tests.sh          # all 19
 bash tests/run_tests.sh loads    # name filter
 ```
 
@@ -222,9 +227,14 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
   `tests/progs/stallprec.s` counts stall cycles (3 before, 1 after). The
   forwarding unit still matches immediate bits, harmlessly: the operand mux
   discards the forwarded value when `alu_src` selects the immediate.
-- **E. Illegal-instruction signal.** Flag unknown opcodes, plus ECALL/EBREAK,
-  instead of running them as silent NOPs. Optionally implement ECALL/EBREAK as
-  a halt, which also gives the core a defined stop condition.
+- **E. ~~Illegal-instruction signal and halt.~~ DONE.** `control_unit` emits
+  `halt` (SYSTEM opcode) and `illegal` (default arm). `riscv_top` acts on them
+  from **EX** (the commit point, so wrong-path ECALLs in a branch shadow are
+  ignored), freezes PC/IF/ID/ID/EX, and lets MEM/WB drain. New ports: sticky
+  `halted` and `error`. Bubbles in IF/ID are now the canonical NOP
+  `0x00000013`, because `0x00000000` is illegal. Tests: `halt.s`, `illegal.s`
+  (mutation-checked: halting from ID fails `halt`; zero bubbles fail 17/19).
+  `asm.pl` gained `.word 0x...`.
 - **F. ~~Hygiene.~~ DONE.** `register_file.v` renamed `reg_file.v`; all arrays
   ascending (`[0:N-1]`); IMEM indexes `addr[11:2]`; ALU `zero` port removed.
   Every `src/*.v` starts with `` `default_nettype none `` and ends with
@@ -241,8 +251,9 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
 
 Tags: **[FPGA blocker]**, **[latent]**, **[hygiene]**.
 
-1. **[FPGA blocker] No output ports.** `riscv_top` has only `clk` and `rst`, so
-   synthesis will optimize the entire CPU away. Needs observable I/O (LEDs,
+1. **[FPGA blocker] No useful output ports.** `riscv_top` has `clk`, `rst` and
+   the two status bits `halted`/`error`. Synthesis keeps only logic that
+   affects outputs, so nearly the whole CPU would still be optimized away. Needs observable I/O (LEDs,
    seven-segment, UART via memory-mapped I/O) and an `.xdc`. See
    `next_steps.md` Phases 0, 1, and 4.
 2. **[FPGA blocker] IMEM reads combinationally** (`instruction_mem.v`, the
@@ -261,9 +272,12 @@ Tags: **[FPGA blocker]**, **[latent]**, **[hygiene]**.
 5. **[FPGA timing] Long branch-resolve path.** Forwarding mux → 32-bit
    comparator → target adder → PC mux → PC, plus the async IMEM read feeding
    IF/ID. Expect a modest Fmax; plan on a divided clock first.
-6. **[latent] ECALL/EBREAK/unknown opcodes run as silent NOPs**
-   (`control_unit.v` empty `default`). See Planned change E.
-7. **[latent] No halt; fetch runs past the program.** Uninitialized IMEM words
+6. ~~**[latent] ECALL/EBREAK/unknown opcodes run as silent NOPs.**~~ Fixed by
+   Planned change E.
+7. **[latent] Fetch runs past the program — now halts.** Since change E, an
+   uninitialized word (X in simulation, 0 on hardware) decodes as illegal and
+   halts with `error`; end programs with `ecall` for a clean halt. Original
+   note: Uninitialized IMEM words
    are X in simulation. These are harmless only because the decoder's defaults
    keep `reg_write = 0`. On hardware the core will run whatever the BRAM
    initializes to. Tests stop on a fixed `#delay`.

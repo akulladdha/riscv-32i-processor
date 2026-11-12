@@ -67,6 +67,7 @@ for my $e (@lines) {
     elsif ($op eq 'FENCE')  { $w = '0000' . '1111' . '1111' . '00000' . '000' . '00000' . '0001111'; }
     elsif ($op eq 'ECALL')  { $w = bits(0,12) . '00000' . '000' . '00000' . '1110011'; }
     elsif ($op eq 'EBREAK') { $w = bits(1,12) . '00000' . '000' . '00000' . '1110011'; }
+    elsif ($op eq '.WORD')  { $w = sprintf('%032b', hex($a[0]) & 0xFFFFFFFF); } # raw word, e.g. .word 0xFFFFFFFF
     elsif (exists $R{$op}) {
         my ($f7,$f3) = @{$R{$op}};
         $w = $f7 . bits(reg($a[2]),5) . bits(reg($a[1]),5) . $f3 . bits(reg($a[0]),5) . '0110011';
