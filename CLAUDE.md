@@ -56,7 +56,7 @@ riscv_top                 src/riscv_top.v   (pipeline regs, branch compare,
   +-- hazard_unit      my_hazard      src/hazard_unit.v       (load-use stall)
   +-- imm_gen          my_imm_gen     src/imm_gen.v
   +-- control_unit     my_cu          src/control_unit.v
-  +-- reg_file         my_regfile     src/register_file.v     (module/file names differ)
+  +-- reg_file         my_regfile     src/reg_file.v
   +-- alu_decoder      my_alu_decoder src/alu_decoder.v       (in ID)
   +-- forwarding_unit  my_fwd         src/forwarding_unit.v
   +-- alu              my_alu         src/alu.v
@@ -108,8 +108,7 @@ ID/EX carries `id_ex_alu_control` rather than `alu_op` and `funct7`.
 link), `10` zero (LUI).
 
 **ALU.** 10 ops on a 4-bit code: ADD SUB AND OR XOR SLL SRL SRA SLT SLTU.
-Shift amounts are masked to `b[4:0]`; SRA and SLT use `$signed`. The `zero`
-output is no longer connected.
+Shift amounts are masked to `b[4:0]`; SRA and SLT use `$signed`. There is no `zero` output; branches use the dedicated comparator.
 
 **Branches and jumps.** Resolved in EX. `branch_cond` compares the *forwarded*
 operands by `funct3` (BEQ/BNE/BLT/BGE/BLTU/BGEU) with a dedicated comparator,
@@ -226,13 +225,13 @@ Each one should leave `bash tests/run_tests.sh` fully passing.
 - **E. Illegal-instruction signal.** Flag unknown opcodes, plus ECALL/EBREAK,
   instead of running them as silent NOPs. Optionally implement ECALL/EBREAK as
   a halt, which also gives the core a defined stop condition.
-- **F. Hygiene.** Rename `register_file.v` → `reg_file.v` (or the module), pick
-  one array declaration direction, slice IMEM with `addr[11:2]` like DMEM
-  does, drop the unused ALU `zero` port, and add `` `default_nettype none `` to
-  every RTL file (explicit `wire` on all ports; restore `` `default_nettype wire ``
-  at file end so testbenches still compile). Without it a mistyped net name is
-  silently created as a 1-bit wire — demonstrated during change C: compiles
-  with a warning, fails 14/16 tests.
+- **F. ~~Hygiene.~~ DONE.** `register_file.v` renamed `reg_file.v`; all arrays
+  ascending (`[0:N-1]`); IMEM indexes `addr[11:2]`; ALU `zero` port removed.
+  Every `src/*.v` starts with `` `default_nettype none `` and ends with
+  `` `default_nettype wire `` (restored so testbenches, compiled after, still
+  get implicit nets). **New RTL files must follow this**: explicit `wire` on
+  every port, nothing undeclared. Function arguments are variables and take no
+  `wire`.
 - **G. Register file without reset** (so it can infer LUTRAM). Do this as part
   of the FPGA work; see Known Issue #4.
 
@@ -272,8 +271,7 @@ Tags: **[FPGA blocker]**, **[latent]**, **[hygiene]**.
 9. **[latent] Stall outranks redirect in the PC mux** (`riscv_top.v:119`).
    Unreachable today. It becomes live if anything ever makes a load and a
    redirect coincide in EX.
-10. **[hygiene] Monolithic top level, split decode, naming mismatches.** See
-    Planned change F. Also, MEM/WB carries both the ALU result and the
+10. **[hygiene] MEM/WB width.** MEM/WB carries both the ALU result and the
     load data plus a select (65 bits) where one resolved 32-bit value would do.
 11. **[hygiene] `$readmemh` uses a relative path.** It depends on the working
     directory in simulation. For Vivado, the `.hex` must be added to the

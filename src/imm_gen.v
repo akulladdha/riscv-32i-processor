@@ -1,7 +1,8 @@
+`default_nettype none
 //Immediate generator: extracts and sign-extends the immediate for every
 //RV32I format. Purely combinational - no clock, no state.
 module imm_gen (
-    input      [31:0] instr,
+    input  wire [31:0] instr,
     output reg [31:0] imm
 );
 
@@ -40,3 +41,5 @@ module imm_gen (
     end
 
 endmodule
+
+`default_nettype wire

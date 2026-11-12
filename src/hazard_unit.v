@@ -1,16 +1,17 @@
+`default_nettype none
 //Hazard unit: detects the load-use hazard that forwarding cannot cover.
 //A load's data is only available after MEM, so an instruction that needs it
 //in EX immediately behind the load must wait one cycle.
 //Purely combinational; the stall signal is acted on by the PC and the
 //IF/ID and ID/EX registers in riscv_top.
 module hazard_unit (
-    input        id_ex_mem_read, //instruction in EX is a load
-    input  [4:0] id_ex_rd,       //...and this is the register it loads
-    input  [4:0] id_rs1,         //source-register fields of the instruction in ID
-    input  [4:0] id_rs2,
-    input        id_uses_rs1,    //...and whether those fields are real registers
-    input        id_uses_rs2,    //   for this format (from control_unit)
-    output       stall
+    input  wire id_ex_mem_read, //instruction in EX is a load
+    input  wire [4:0] id_ex_rd,       //...and this is the register it loads
+    input  wire [4:0] id_rs1,         //source-register fields of the instruction in ID
+    input  wire [4:0] id_rs2,
+    input  wire id_uses_rs1,    //...and whether those fields are real registers
+    input  wire id_uses_rs2,    //   for this format (from control_unit)
+    output wire stall
 );
 
     //Without the uses_* qualifiers, immediate bits that happen to sit in the
@@ -22,3 +23,5 @@ module hazard_unit (
                     (id_uses_rs2 && id_ex_rd == id_rs2));
 
 endmodule
+
+`default_nettype wire

@@ -1,5 +1,6 @@
+`default_nettype none
 module control_unit(
-    input [6:0] opcode,
+    input  wire [6:0] opcode,
     output reg branch,
     output reg reg_write,
     output reg alu_src,
@@ -108,3 +109,5 @@ always @(*) begin
     end
 
 endmodule
+
+`default_nettype wire

@@ -1,10 +1,11 @@
+`default_nettype none
 //ALU decoder: turns the coarse alu_op from control_unit plus the instruction's
 //funct3 / funct7[5] into the 4-bit operation code the ALU executes.
 //Purely combinational.
 module alu_decoder (
-    input      [1:0] alu_op,   //00 add, 01 sub, 10 R-type, 11 I-type ALU
-    input      [2:0] funct3,
-    input            funct7_5, //instr[30]: selects SUB vs ADD, SRA vs SRL
+    input  wire [1:0] alu_op,   //00 add, 01 sub, 10 R-type, 11 I-type ALU
+    input  wire [2:0] funct3,
+    input  wire funct7_5, //instr[30]: selects SUB vs ADD, SRA vs SRL
     output reg [3:0] alu_control
 );
 
@@ -52,3 +53,5 @@ module alu_decoder (
     end
 
 endmodule
+
+`default_nettype wire

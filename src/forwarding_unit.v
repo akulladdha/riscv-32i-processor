@@ -1,15 +1,16 @@
+`default_nettype none
 //Forwarding unit: for each EX-stage source register, decide whether its value
 //should come from the register file (00), from MEM/WB (01), or from EX/MEM (10).
 //Purely combinational.
 module forwarding_unit (
-    input  [4:0] id_ex_rs1,
-    input  [4:0] id_ex_rs2,
-    input  [4:0] ex_mem_rd,
-    input        ex_mem_reg_write,
-    input  [4:0] mem_wb_rd,
-    input        mem_wb_reg_write,
-    output [1:0] forward_a,
-    output [1:0] forward_b
+    input  wire [4:0] id_ex_rs1,
+    input  wire [4:0] id_ex_rs2,
+    input  wire [4:0] ex_mem_rd,
+    input  wire ex_mem_reg_write,
+    input  wire [4:0] mem_wb_rd,
+    input  wire mem_wb_reg_write,
+    output wire [1:0] forward_a,
+    output wire [1:0] forward_b
 );
 
     localparam FWD_NONE   = 2'b00; //use the value read from the register file
@@ -31,9 +32,9 @@ module forwarding_unit (
     function [1:0] select;
         input [4:0] rs;
         input [4:0] em_rd;
-        input       em_we;
+        input em_we;
         input [4:0] mw_rd;
-        input       mw_we;
+        input mw_we;
         begin
             if      (em_we && em_rd != 5'b0 && em_rd == rs) select = FWD_EX_MEM;
             else if (mw_we && mw_rd != 5'b0 && mw_rd == rs) select = FWD_MEM_WB;
@@ -45,3 +46,5 @@ module forwarding_unit (
     assign forward_b = select(id_ex_rs2, ex_mem_rd, ex_mem_reg_write, mem_wb_rd, mem_wb_reg_write);
 
 endmodule
+
+`default_nettype wire

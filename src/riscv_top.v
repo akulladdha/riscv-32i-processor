@@ -1,8 +1,9 @@
+`default_nettype none
 module riscv_top #(
     parameter PROGRAM = "sample_program.hex"
 )(
-    input clk,
-    input rst
+    input  wire clk,
+    input  wire rst
 );
 
     //IF stage wires
@@ -276,7 +277,6 @@ module riscv_top #(
         .a(ex_alu_a),
         .b(ex_alu_src2),
         .result(ex_alu_result)
-        //.zero() left unconnected: the funct3 branch comparator replaced it
     );
 
     //EX/MEM register
@@ -370,3 +370,5 @@ module riscv_top #(
     assign wb_write_data = mem_wb_mem_to_reg ? mem_wb_read_data : mem_wb_alu_result;
 
 endmodule
+
+`default_nettype wire

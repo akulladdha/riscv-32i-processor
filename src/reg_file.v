@@ -1,15 +1,17 @@
+`default_nettype none
 module reg_file (
-    input clk,
-    input rst,
-    input rg_write_en,// Write Enable: only write if this is 1
-    input [4:0] rg_des_addr,// Destination register index (0-31)
-    input [4:0] rg_sr1_addr,// Source 1 register index (0-31)
-    input [4:0] rg_sr2_addr,// Source 2 register index (0-31)
-    input [31:0] rg_des_data,// Data to be written
-    output [31:0] rg_sr1_data,// Data read from Source 1
-    output [31:0] rg_sr2_data// Data read from Source 2
+    input  wire clk,
+    input  wire rst,
+    input  wire rg_write_en,// Write Enable: only write if this is 1
+    input  wire [4:0] rg_des_addr,// Destination register index (0-31)
+    input  wire [4:0] rg_sr1_addr,// Source 1 register index (0-31)
+    input  wire [4:0] rg_sr2_addr,// Source 2 register index (0-31)
+    input  wire [31:0] rg_des_data,// Data to be written
+    output wire [31:0] rg_sr1_data,// Data read from Source 1
+    output wire [31:0] rg_sr2_data// Data read from Source 2
 );
-reg [31:0] registers [31:0];
+//[0:31]: ascending index range, matching the memories
+reg [31:0] registers [0:31];
 integer i;
 
 // Write-first: a read in the same cycle as a write to the same register must
@@ -38,3 +40,5 @@ end
 
 
 endmodule
+
+`default_nettype wire
